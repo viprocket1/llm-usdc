@@ -73,7 +73,7 @@ NETWORK_POLL_PROMPTS = 6.0
 SSE_RECONNECT_BACKOFF = 3.0
 LLM_TIMEOUT = 30
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 # We use the GitHub API instead of raw.githubusercontent.com because the raw
 # CDN caches stale content for minutes after a push. The API always returns
 # the fresh file. See https://docs.github.com/en/rest/repos/contents
@@ -206,8 +206,30 @@ def _llm_ollama(text: str):
     return (out.get("response") or "").strip() or None
 
 
+# --- LLM binary cache -----------------------------------------------------
+# shutil.which() per call is cheap but not free; cache results.
+_LLM_BIN_CACHE: dict[str, bool] = {}
+
+def _has_binary(name: str) -> bool:
+    """True if the named binary is on PATH and executable."""
+    if name in _LLM_BIN_CACHE:
+        return _LLM_BIN_CACHE[name]
+    # Skip "python" and "python3" — always available
+    if name in ("python", "python3"):
+        _LLM_BIN_CACHE[name] = True
+        return True
+    found = shutil.which(name) is not None
+    _LLM_BIN_CACHE[name] = found
+    return found
+
+
 def _llm_subprocess(cmd, text: str, stdin: bool = False):
-    """Run an LLM CLI and return its stdout (stripped), or None."""
+    """Run an LLM CLI and return its stdout (stripped), or None.
+
+    Skips instantly if the binary isn't on PATH (no 30s timeout penalty).
+    """
+    if cmd and not _has_binary(cmd[0]):
+        return None
     try:
         kwargs = dict(capture_output=True, text=True, timeout=LLM_TIMEOUT, check=False)
         if stdin:
@@ -231,6 +253,17 @@ LLM_BACKENDS = [
     ("aider",        lambda t: _llm_subprocess(["aider", "--no-auto-commits", "--message"], t)),
     ("goose",        lambda t: _llm_subprocess(["goose", "run", "--no-session"], t)),
     ("qwen",         lambda t: _llm_subprocess(["qwen", "-p"], t)),
+    # ── prompt-as-argument autonomous agents ──
+    ("hermes",       lambda t: _llm_subprocess(["hermes", "run"], t)),
+    ("openclaw",     lambda t: _llm_subprocess(["openclaw", "run"], t) or _llm_subprocess(["claw", "run"], t)),
+    ("openhands",    lambda t: _llm_subprocess(["openhands", "-t"], t)),
+    ("agent-zero",   lambda t: _llm_subprocess(["agent-zero", "--prompt"], t)),
+    ("openmanus",    lambda t: _llm_subprocess(["python", "-m", "openmanus"], t)),
+    ("autogpt",      lambda t: _llm_subprocess(["autogpt", "--prompt"], t)),
+    ("superagi",     lambda t: _llm_subprocess(["superagi", "run", "--prompt"], t)),
+    ("crewai",       lambda t: _llm_subprocess(["crewai", "run", "--prompt"], t)),
+    ("metagpt",      lambda t: _llm_subprocess(["metagpt"], t)),
+    ("camel",        lambda t: _llm_subprocess(["camel", "run", "--prompt"], t)),
 ]
 
 
@@ -307,9 +340,19 @@ def make_llm_response(prompt: str) -> str:
       6. aider   (`aider --no-auto-commits --message`)
       7. goose   (`goose run --no-session`)
       8. qwen    (`qwen -p`)
-      9. anthropic API (if ANTHROPIC_API_KEY is set)
-     10. openai   API (if OPENAI_API_KEY is set)
-     11. Fallback: "hi back" (still earns the fee)
+      9. hermes  (`hermes run`)
+     10. openclaw (`openclaw run` or `claw run`)
+     11. openhands (`openhands -t`)
+     12. agent-zero (`agent-zero --prompt`)
+     13. openmanus (`python -m openmanus`)
+     14. autogpt (`autogpt --prompt`)
+     15. superagi (`superagi run --prompt`)
+     16. crewai (`crewai run --prompt`)
+     17. metagpt (`metagpt`)
+     18. camel  (`camel run --prompt`)
+     19. anthropic API (if ANTHROPIC_API_KEY is set)
+     20. openai   API (if OPENAI_API_KEY is set)
+     21. Fallback: "hi back" (still earns the fee)
     """
     text = (prompt or "").strip()
 
