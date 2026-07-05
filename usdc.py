@@ -16,7 +16,7 @@ How answering works (in order, first one that succeeds):
   3. Spawn `gemini -p <prompt>`        (uses your Google key)
   4. Fallback: "hi back" — still earns the fee, still keeps the agent alive
 
-Keys:  [p] pause   [q] quit
+Keys:  [p] pause   [u] update   [q] quit
 
 The TUI surface is for monitoring only — it shows the simulated mining
 ticker, your pool balance, the inbox of received prompts, the live feed
@@ -25,12 +25,14 @@ touch it; the rig works unattended.
 """
 
 import argparse
+import ast
 import concurrent.futures
 import json
 import math
 import os
 import queue
 import random
+import re
 import shutil
 import signal
 import socket
@@ -67,6 +69,9 @@ NETWORK_POLL_PORTFOLIO = 8.0
 NETWORK_POLL_PROMPTS = 6.0
 SSE_RECONNECT_BACKOFF = 3.0
 LLM_TIMEOUT = 30
+
+__version__ = "1.1.0"
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/viprocket1/llm-usdc/main/usdc.py"
 
 
 # ---------- ANSI helpers ----------------------------------------------------
@@ -549,8 +554,9 @@ def render(miner: Miner, feed: Feed, inbox: Inbox, endpoint: str, online: bool,
                c(state_color + Style.BRIGHT, f"[{state}]") +
                c(Fore.WHITE, f"  endpoint: {endpoint}    online: {'yes' if online else 'no'}    inbox: {inbox.count()}"))
     out.append(move_to(base_row + 1, 1) +
-               c(Fore.WHITE, " keys: ") +
+               c(Fore.WHITE, f" usdc {__version__}  keys: ") +
                c(Fore.CYAN, "[p]") + c(Fore.WHITE, " pause  ") +
+               c(Fore.CYAN, "[u]") + c(Fore.WHITE, " update  ") +
                c(Fore.CYAN, "[q]") + c(Fore.WHITE, " quit"))
 
     return "".join(out)
@@ -866,6 +872,21 @@ def run(args: argparse.Namespace) -> int:
             elif k in ("p", "P"):
                 paused = not paused
                 feed.push("info", "paused" if paused else "resumed")
+            elif k in ("u", "U"):
+                feed.push("info", "self-update requested — fetching latest...")
+                sys.stdout.write(render(miner, feed, inbox, endpoint_url, online, cols, rows, paused))
+                sys.stdout.flush()
+                # Shutdown gracefully first
+                http.shutdown()
+                llm.shutdown()
+                restore_terminal()
+                sys.stdout.write(SHOW_CURSOR + ALT_SCREEN_OFF)
+                sys.stdout.flush()
+                print()
+                ok, msg = do_update()
+                if not ok:
+                    print(f"update failed: {msg}")
+                    sys.exit(1)
 
             time.sleep(0.15)
     finally:
@@ -876,16 +897,78 @@ def run(args: argparse.Namespace) -> int:
         sys.stdout.flush()
 
 
+def do_update() -> tuple[bool, str]:
+    """Fetch latest usdc.py from GitHub, replace the running script, re-exec.
+
+    Returns (success, message). On success, this function does NOT return —
+    the process is replaced via os.execv. The return type is for the
+    error/validation path.
+    """
+    script_path = os.path.abspath(__file__)
+    try:
+        with urllib.request.urlopen(GITHUB_RAW_URL, timeout=15) as r:
+            new_src = r.read().decode("utf-8", "replace")
+    except Exception as e:
+        return False, f"download failed: {type(e).__name__}: {e}"[:120]
+
+    # 1) must be valid Python
+    try:
+        ast.parse(new_src)
+    except SyntaxError as e:
+        return False, f"new version has syntax error: {e}"
+
+    # 2) must have the same entrypoint symbols we depend on at runtime
+    required = ("Miner", "Feed", "Inbox", "FcoinClient", "AsyncHTTP", "LLMWorker", "make_llm_response", "def main(")
+    for sym in required:
+        if sym not in new_src:
+            return False, f"new version missing symbol: {sym}"
+
+    # 3) extract __version__ from new source
+    new_ver = __version__
+    m = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', new_src, re.MULTILINE)
+    if m:
+        new_ver = m.group(1)
+
+    # 4) same version? nothing to do
+    if new_ver == __version__:
+        return True, f"already on latest ({__version__})"
+
+    # 5) write atomically: write to .new, fsync, rename over the script
+    tmp = script_path + ".new"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(new_src)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, script_path)
+    except Exception as e:
+        try: os.unlink(tmp)
+        except Exception: pass
+        return False, f"write failed: {type(e).__name__}: {e}"[:120]
+
+    # 6) re-exec current python with the same args (minus --update)
+    new_argv = [a for a in sys.argv if a != "--update"]
+    print(f"updated: {__version__} -> {new_ver} — restarting rig")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(sys.executable, [sys.executable] + new_argv)
+    # unreachable
+    return True, f"updated to {new_ver}"
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="usdc",
         description="Autonomous fcoin prompt-responder rig for Termux. No manual input.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "keys:  [p] pause   [q] quit\n\n"
+            "keys:  [p] pause   [u] update   [q] quit\n\n"
             "Runs unattended. Polls fcoin for new prompts, sends each one to your\n"
             "local LLM (ollama → codex → gemini → fallback), and POSTs the reply\n"
-            "back to /respond_prompt. Earns USDC for every accepted answer.\n"
+            "back to /respond_prompt. Earns USDC for every accepted answer.\n\n"
+            "auto-update:  press [u] in the TUI, or run `usdc --update`.\n"
+            "              Fetches the latest usdc.py from GitHub main, replaces\n"
+            "              the running script atomically, and restarts in place.\n"
         ),
     )
     p.add_argument("--endpoint", default=None,
@@ -899,10 +982,26 @@ def main() -> int:
     p.add_argument("--detach", action="store_true",
                    help="(internal) flag set by --new-window; no extra effect")
     p.add_argument("--seed", type=int, default=None, help="RNG seed (for reproducible sim)")
+    p.add_argument("--update", action="store_true",
+                   help="fetch latest usdc.py from GitHub, replace this script, restart")
+    p.add_argument("--version", action="store_true", help="print version and exit")
     args = p.parse_args()
+
+    if args.version:
+        print(f"usdc {__version__}  (endpoint: {args.endpoint or DEFAULT_ENDPOINT})")
+        return 0
+
+    if args.update:
+        ok, msg = do_update()
+        if not ok:
+            print(f"update failed: {msg}")
+            return 1
+        # do_update() calls os.execv on success, so we never reach here
+        print(msg)
+        return 0
+
     return run(args)
 
 
 if __name__ == "__main__":
     sys.exit(main())
-
