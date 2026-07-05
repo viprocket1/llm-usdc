@@ -81,7 +81,7 @@ NETWORK_POLL_PROMPTS = 6.0
 SSE_RECONNECT_BACKOFF = 3.0
 LLM_TIMEOUT = 30
 
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 # We use the GitHub API instead of raw.githubusercontent.com because the raw
 # CDN caches stale content for minutes after a push. The API always returns
 # the fresh file. See https://docs.github.com/en/rest/repos/contents
@@ -217,8 +217,56 @@ def _has_binary(name: str) -> bool:
         _LLM_BIN_CACHE[name] = True
         return True
     found = shutil.which(name) is not None
-    _LLM_BIN_CACHE[name] = found
+    _LLM_BIN_CACHE[name] = True
     return found
+
+
+# Names of the actual binaries the rig would call. Used for the
+# "backends detected" panel and the --backends CLI command.
+def _backend_binary_names() -> list[tuple[str, str]]:
+    """Return [(display_name, binary_path), ...] for every CLI backend."""
+    return [
+        ("ollama",     "ollama"),
+        ("claude",     "claude"),
+        ("codex",      "codex"),
+        ("gemini",     "gemini"),
+        ("opencode",   "opencode"),
+        ("aider",      "aider"),
+        ("goose",      "goose"),
+        ("qwen",       "qwen"),
+        ("hermes",     "hermes"),
+        ("openclaw",   "openclaw"),
+        ("openhands",  "openhands"),
+        ("agent-zero", "agent-zero"),
+        ("openmanus",  "python"),       # uses `python -m openmanus`
+        ("autogpt",    "autogpt"),
+        ("superagi",   "superagi"),
+        ("crewai",     "crewai"),
+        ("metagpt",    "metagpt"),
+        ("camel",      "camel"),
+    ]
+
+
+def detect_llm_backends() -> list[tuple[str, bool, str | None]]:
+    """Return [(name, found, binary_path)] for every LLM backend.
+
+    `found` is True if the binary is on PATH. `binary_path` is the
+    full path the rig would use, or None if not found. API-direct
+    backends (anthropic, openai) are also reported based on whether
+    the matching env var is set.
+    """
+    out = []
+    for name, binary in _backend_binary_names():
+        path = shutil.which(binary) if binary not in ("python", "python3") else shutil.which("python3") or "python3"
+        out.append((name, path is not None, path))
+    # API-direct
+    out.append(("anthropic-api",
+                bool(os.environ.get("ANTHROPIC_API_KEY")),
+                "ANTHROPIC_API_KEY env var"))
+    out.append(("openai-api",
+                bool(os.environ.get("OPENAI_API_KEY")),
+                "OPENAI_API_KEY env var"))
+    return out
 
 
 def _llm_subprocess(cmd, text: str, stdin: bool = False):
@@ -644,6 +692,27 @@ def render(agent: Agent, feed: Feed, inbox: Inbox, endpoint: str, online: bool,
         out.append(move_to(9, 1) + CLEAR_LINE)
 
     out.append(move_to(10, 1) + c(Fore.YELLOW, hr("─", w)))
+
+    # LLM backends detected on this machine
+    backends = detect_llm_backends()
+    detected = [(n, p) for (n, ok, p) in backends if ok]
+    out.append(move_to(11, 1) + c(Fore.WHITE + Style.BRIGHT, " LLMs         ") +
+               c(Fore.WHITE, f"{len(detected)} of {len(backends)} backends available"))
+    if detected:
+        # Show up to 6 on one line; if more, show the rest on the next line
+        names = [n for n, _ in detected]
+        out.append(move_to(12, 1) + c(Fore.GREEN, "  ✓  ") +
+                   c(Fore.WHITE, "  ".join(names[:6])))
+        if len(names) > 6:
+            out.append(move_to(13, 1) + c(Fore.GREEN, "  ✓  ") +
+                       c(Fore.WHITE, "  ".join(names[6:])))
+    else:
+        out.append(move_to(12, 1) +
+                   c(Fore.RED, "  ✗  no LLM CLIs detected on this machine") +
+                   c(Fore.WHITE, "  (rig will answer with the 'y' fallback)"))
+        out.append(move_to(13, 1) + CLEAR_LINE)
+
+    out.append(move_to(14, 1) + c(Fore.YELLOW, hr("─", w)))
 
     # feed
     out.append(move_to(20, 1) + c(Fore.WHITE + Style.BRIGHT, " FEED ") + c(Fore.WHITE, hr("─", w - 5)))
@@ -1159,10 +1228,27 @@ def main() -> int:
                    help="filter --earnings to one agent")
     p.add_argument("--stats", action="store_true",
                    help="show global marketplace stats and exit")
+    p.add_argument("--backends", action="store_true",
+                   help="list all LLM backends and which are detected on this machine, then exit")
     args = p.parse_args()
 
     if args.version:
         print(f"usdc {__version__}  (endpoint: {args.endpoint or DEFAULT_ENDPOINT})")
+        return 0
+
+    if args.backends:
+        bk = detect_llm_backends()
+        n_ok = sum(1 for _, ok, _ in bk if ok)
+        n_tot = len(bk)
+        print(f"# LLM backends detected on this machine: {n_ok} of {n_tot}")
+        for name, ok, path in bk:
+            mark = "✓" if ok else "✗"
+            where = path if ok else "not found"
+            print(f"  {mark}  {name:14s}  {where}")
+        if n_ok == 0:
+            print()
+            print("  no LLM CLIs detected — the rig will answer with the 'y' fallback.")
+            print("  install one (e.g. `pkg install ollama && ollama serve`) for real answers.")
         return 0
 
     # === marketplace query commands ===
