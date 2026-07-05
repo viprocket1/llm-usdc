@@ -1,37 +1,45 @@
 #!/usr/bin/env python3
 """
-usdc — autonomous fcoin prompt-responder rig for Termux.
+usdc — fcoin prompt-responder agent.
 
-Default endpoint: https://fcoin.onrender.com
+Connects to a fcoin-compatible server (default: https://fcoin.onrender.com),
+receives prompt requests via SSE + polling, runs each one through your
+local LLM, and POSTs the answer back. No manual input.
 
-The TUI runs in the background and does ONE thing: whenever a prompt
-appears on the fcoin marketplace, run it through your local LLM and
-POST the answer back. No manual input, no submit box. The user
-leaves the rig running and collects USDC fees for answered prompts.
+The TUI is a read-only monitor: it shows connection state, your agent's
+wallet balance, the inbox of received prompts, and the live event feed.
+You don't have to interact with it — the agent runs unattended.
 
-How answering works (in order, first one that succeeds):
-  1. POST to ollama at $OLLAMA_HOST (default http://127.0.0.1:11434)
-     model $OLLAMA_MODEL (default llama3.2)
-  2. Spawn `codex -q --no-cache <prompt>` (uses your OpenAI key)
-  3. Spawn `gemini -p <prompt>`        (uses your Google key)
-  4. Fallback: "hi back" — still earns the fee, still keeps the agent alive
+Answering pipeline (first backend that returns a valid reply wins):
+  1. ollama            ($OLLAMA_HOST, model $OLLAMA_MODEL)
+  2. claude            (claude -p)
+  3. codex             (codex exec --no-cache -q)
+  4. gemini            (gemini -p)
+  5. opencode          (opencode run)
+  6. aider             (aider --no-auto-commits --message)
+  7. goose             (goose run --no-session)
+  8. qwen              (qwen -p)
+  9. hermes            (hermes chat -q)
+ 10. openclaw          (openclaw run / claw run)
+ 11. openhands         (openhands -t)
+ 12. agent-zero        (agent-zero --prompt)
+ 13. openmanus         (python -m openmanus)
+ 14. autogpt           (autogpt --prompt)
+ 15. superagi          (superagi run --prompt)
+ 16. crewai            (crewai run --prompt)
+ 17. metagpt           (metagpt)
+ 18. camel             (camel run --prompt)
+ 19. Anthropic API     (if ANTHROPIC_API_KEY is set)
+ 20. OpenAI API        (if OPENAI_API_KEY is set)
 
-Keys:  [p] pause   [u] update   [q] quit
-
-Auto-update: every time `usdc` starts, it checks GitHub for a newer
-version and replaces itself in place. Use --no-update to skip.
-
-The TUI surface is for monitoring only — it shows the simulated mining
-ticker, your pool balance, the inbox of received prompts, the live feed
-of HTTP/SSE events, and the auto-respond pipeline. You don't have to
-touch it; the rig works unattended.
+Override priority order:  USDC_LLM_FIRST=<name>
+Keys:  [p] pause  [u] self-update  [q] quit
 """
 
 import argparse
 import ast
 import concurrent.futures
 import json
-import math
 import os
 import queue
 import random
@@ -73,7 +81,7 @@ NETWORK_POLL_PROMPTS = 6.0
 SSE_RECONNECT_BACKOFF = 3.0
 LLM_TIMEOUT = 30
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 # We use the GitHub API instead of raw.githubusercontent.com because the raw
 # CDN caches stale content for minutes after a push. The API always returns
 # the fresh file. See https://docs.github.com/en/rest/repos/contents
@@ -98,33 +106,23 @@ def move_to(row: int, col: int) -> str:
     return CSI + f"{row};{col}H"
 
 
-# ---------- Mining simulation -----------------------------------------------
+# ---------- Agent state ----------------------------------------------------
 
 @dataclass
-class Miner:
-    hashrate: float = 0.0
-    shares_accepted: int = 0
-    shares_rejected: int = 0
-    blocks_found: int = 0
-    balance: float = 0.0
-    pending: float = 0.0
-    started_at: float = field(default_factory=time.time)
-    last_block_at: float = 0.0
-    worker: str = "termux-rig-01"
-    pool_balance_usdc: float = 0.0
-    pool_balance_fcoin: float = 0.0
-    open_prompts: int = 0
-    tasks_received: int = 0
-    tasks_answered: int = 0
-    tasks_failed: int = 0
-    last_poll_at: float = 0.0
+class Agent:
+    """Per-agent state. Everything here is observable on the server —
+    no simulated numbers, no fake rewards. Counts come from real
+    successful interactions with the fcoin API."""
 
-    def add_hashrate_sample(self, mhs: float) -> None:
-        a = 0.2
-        self.hashrate = self.hashrate * (1 - a) + mhs * a
-
-    def effective_hashrate(self) -> float:
-        return self.hashrate if self.hashrate > 0.01 else 0.01
+    agent_id:     str = "termux-rig-01"
+    started_at:   float = field(default_factory=time.time)
+    usdc_balance: float = 0.0       # from /portfolio
+    fcoin_balance: float = 0.0     # from /portfolio
+    open_prompts: int = 0          # from /prompts?status=open
+    received:     int = 0          # count of prompts received
+    answered:     int = 0          # count of responses accepted by server
+    failed:       int = 0          # count of responses the server rejected
+    last_poll_at: float = 0.0      # last successful /portfolio response
 
 
 # ---------- Log feed --------------------------------------------------------
@@ -579,20 +577,8 @@ class LLMWorker:
 def hr(ch: str = "─", width: int = 60) -> str:
     return ch * width
 
-def bar(pct: float, width: int = 24, full="█", empty="░") -> str:
-    pct = max(0.0, min(1.0, pct))
-    n = int(pct * width)
-    return full * n + empty * (width - n)
-
 def fmt_usdc(x: float) -> str:
     return f"{x:>10.6f}"
-
-def fmt_rate(x: float) -> str:
-    if x >= 1000:
-        return f"{x/1000:6.2f} GH/s"
-    if x >= 1:
-        return f"{x:6.2f} MH/s"
-    return f"{x*1000:6.2f} kH/s"
 
 def clip(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
@@ -611,67 +597,53 @@ LEVEL_COLORS = {
     "llm":   Fore.CYAN,
 }
 
-def render(miner: Miner, feed: Feed, inbox: Inbox, endpoint: str, online: bool,
+def render(agent: Agent, feed: Feed, inbox: Inbox, endpoint: str, online: bool,
            width: int, height: int, paused: bool) -> str:
     w = max(60, width)
     h = max(24, height)
     out = []
     out.append(CLEAR_SCREEN)
 
-    title = "  ⛏  USDC AUTONOMOUS RIG  "
-    sub = " fcoin responder — no manual input "
+    title = "  USDC PROMPT-RESPONDER AGENT  "
+    sub = " fcoin marketplace  ·  v" + __version__
     pad = max(1, w - len(title) - len(sub) - 2)
     out.append(move_to(1, 1))
     out.append(c(Fore.BLACK + Back.YELLOW, title) + c(Fore.YELLOW, "│") + c(Fore.WHITE, sub) + " " * (pad - 1))
     out.append(move_to(2, 1) + c(Fore.YELLOW, hr("─", w)))
 
-    # hashrate
-    elapsed = int(time.time() - miner.started_at)
+    # status line
+    elapsed = int(time.time() - agent.started_at)
     hh, rem = divmod(elapsed, 3600)
     mm, ss = divmod(rem, 60)
     up = f"{hh:02d}:{mm:02d}:{ss:02d}"
-    rate = miner.effective_hashrate()
-    share_rate = min(0.5, rate * 0.05)
-    accepted_pct = (miner.shares_accepted / max(1, miner.shares_accepted + miner.shares_rejected)) * 100
+    pool_state = c(Fore.RED, "OFFLINE") if not online else c(Fore.GREEN, "ONLINE ")
 
-    out.append(move_to(3, 1) + c(Fore.CYAN, " WORKER       ") + miner.worker)
-    out.append(move_to(4, 1) + c(Fore.CYAN, " HASHRATE     ") + fmt_rate(rate) + c(Fore.WHITE, "   ") + bar(min(rate / 50.0, 1.0)))
-    out.append(move_to(5, 1) + c(Fore.CYAN, " UPTIME       ") + up + c(Fore.WHITE, f"   share rate {share_rate:4.2f}/s"))
-    out.append(move_to(6, 1) + c(Fore.CYAN, " ACCEPTED     ") + c(Fore.GREEN, str(miner.shares_accepted)) +
-               c(Fore.WHITE, f"  rejected {miner.shares_rejected}  ({accepted_pct:5.1f}%)"))
+    out.append(move_to(3, 1) + c(Fore.CYAN, " AGENT        ") + agent.agent_id +
+               c(Fore.WHITE, f"   {pool_state}   uptime {up}"))
+    out.append(move_to(4, 1) + c(Fore.CYAN, " ENDPOINT     ") + endpoint)
+    out.append(move_to(5, 1) + c(Fore.CYAN, " PROMPTS      ") +
+               c(Fore.WHITE, f"open={agent.open_prompts}  received={agent.received}  "
+                              f"answered={c(Fore.GREEN, str(agent.answered))}  "
+                              f"failed={c(Fore.RED if agent.failed else Fore.WHITE, str(agent.failed))}"))
+    out.append(move_to(6, 1) + c(Fore.CYAN, " WALLET       ") +
+               c(Fore.WHITE, f"USDC={c(Fore.GREEN, fmt_usdc(agent.usdc_balance))}   "
+                              f"fcoin={c(Fore.YELLOW, f'{agent.fcoin_balance:>10.4f}')}"))
 
     out.append(move_to(7, 1) + c(Fore.YELLOW, hr("─", w)))
-
-    # earnings
-    total_earned = miner.balance + miner.pending
-    out.append(move_to(8, 1) + c(Fore.MAGENTA, " BALANCE      ") + c(Fore.GREEN + Style.BRIGHT, fmt_usdc(miner.balance)) + c(Fore.WHITE, " USDC"))
-    out.append(move_to(9, 1) + c(Fore.MAGENTA, " PENDING      ") + c(Fore.YELLOW, fmt_usdc(miner.pending)) + c(Fore.WHITE, " USDC"))
-    out.append(move_to(10, 1) + c(Fore.MAGENTA, " LIFETIME     ") + c(Fore.WHITE, fmt_usdc(total_earned)) + c(Fore.WHITE, " USDC"))
-
-    out.append(move_to(11, 1) + c(Fore.YELLOW, hr("─", w)))
-
-    # pool
-    pool_state = c(Fore.RED, "OFFLINE") if not online else c(Fore.GREEN, "ONLINE ")
-    out.append(move_to(12, 1) + c(Fore.CYAN, " POOL         ") + pool_state + c(Fore.WHITE, f"  endpoint {endpoint}"))
-    out.append(move_to(13, 1) + c(Fore.CYAN, " AGENT        ") + miner.worker)
-    out.append(move_to(14, 1) + c(Fore.CYAN, " POOL USDC    ") + c(Fore.GREEN, fmt_usdc(miner.pool_balance_usdc)))
-    out.append(move_to(15, 1) + c(Fore.CYAN, " POOL FCOIN   ") +
-               c(Fore.YELLOW, f"{miner.pool_balance_fcoin:>10.4f}") +
-               c(Fore.WHITE, f"  open: {miner.open_prompts}  rcv: {miner.tasks_received}  ans: {miner.tasks_answered}  fail: {miner.tasks_failed}"))
-
-    out.append(move_to(16, 1) + c(Fore.YELLOW, hr("─", w)))
 
     # latest task
     latest = inbox.latest()
     if latest:
-        out.append(move_to(17, 1) + c(Fore.MAGENTA + Style.BRIGHT, " LATEST TASK  ") +
-                   c(Fore.WHITE, f"id={latest.id[:8]}  fee={latest.fee_usdc:.3f}USDC  by {latest.submitter}"))
-        out.append(move_to(18, 1) + c(Fore.WHITE, " > ") + c(Fore.WHITE, clip(latest.prompt.replace("\n", " "), w - 4)))
+        out.append(move_to(8, 1) + c(Fore.MAGENTA + Style.BRIGHT, " LATEST TASK  ") +
+                   c(Fore.WHITE, f"id={latest.id[:8]}  fee={latest.fee_usdc:.4f} USDC  by {latest.submitter}"))
+        out.append(move_to(9, 1) + c(Fore.WHITE, " > ") +
+                   c(Fore.WHITE, clip(latest.prompt.replace("\n", " "), w - 4)))
     else:
-        out.append(move_to(17, 1) + c(Fore.MAGENTA + Style.BRIGHT, " LATEST TASK  ") + c(Fore.WHITE, "(none — waiting for /stream events)"))
-        out.append(move_to(18, 1) + CLEAR_LINE)
+        out.append(move_to(8, 1) + c(Fore.MAGENTA + Style.BRIGHT, " LATEST TASK  ") +
+                   c(Fore.WHITE, "(no prompts received yet)"))
+        out.append(move_to(9, 1) + CLEAR_LINE)
 
-    out.append(move_to(19, 1) + c(Fore.YELLOW, hr("─", w)))
+    out.append(move_to(10, 1) + c(Fore.YELLOW, hr("─", w)))
 
     # feed
     out.append(move_to(20, 1) + c(Fore.WHITE + Style.BRIGHT, " FEED ") + c(Fore.WHITE, hr("─", w - 5)))
@@ -792,7 +764,7 @@ def run(args: argparse.Namespace) -> int:
     if not args.local:
         client = FcoinClient(endpoint_url, agent_id)
 
-    miner = Miner(worker=agent_id)
+    agent = Agent(agent_id=agent_id)
     feed = Feed()
     inbox = Inbox()
     paused = False
@@ -819,7 +791,7 @@ def run(args: argparse.Namespace) -> int:
             log("sse", f"event {ev_type}")
         sse_events.put(ev)
 
-    feed.push("info", f"rig online — worker {miner.worker}")
+    feed.push("info", f"rig online — worker {agent.agent_id}")
     if client:
         feed.push("info", f"endpoint {endpoint_url} (default fcoin)")
         feed.push("info", "auto-responder ON — ollama → codex → gemini → stub")
@@ -840,11 +812,8 @@ def run(args: argparse.Namespace) -> int:
         sys.stdout.write(SHOW_CURSOR + ALT_SCREEN_OFF)
         sys.stdout.flush()
         print()
-        print(f"finalized: balance={miner.balance:.6f} USDC  "
-              f"accepted={miner.shares_accepted}  rejected={miner.shares_rejected}  "
-              f"blocks={miner.blocks_found}  "
-              f"pool={miner.pool_balance_usdc:.6f} USDC  "
-              f"tasks rcv={miner.tasks_received} ans={miner.tasks_answered} fail={miner.tasks_failed}")
+        print(f"finalized: usdc={agent.usdc_balance:.6f} USDC  fcoin={agent.fcoin_balance:.4f}  "
+              f"prompts rcv={agent.received} ans={agent.answered} fail={agent.failed}")
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
@@ -874,34 +843,10 @@ def run(args: argparse.Namespace) -> int:
             cols, rows = terminal_size()
             fee_pending = 0.0
 
-            # --- sim step ---
-            if not paused:
-                base = 6.0 + (miner.blocks_found * 1.2) + math.sin(now / 7.0) * 1.5
-                jitter = random.gauss(0, 0.6)
-                miner.add_hashrate_sample(max(0.5, base + jitter))
-
-                if random.random() < 0.35:
-                    if random.random() < 0.92:
-                        miner.shares_accepted += 1
-                        payout = 0.000015 + miner.effective_hashrate() * 0.000002
-                        miner.balance += payout
-                    else:
-                        miner.shares_rejected += 1
-                        if not feed.lines or feed.lines[-1][0] != "warn":
-                            feed.push("warn", "stale share rejected by pool")
-
-                if random.random() < 0.004:
-                    miner.blocks_found += 1
-                    reward = 0.05 + random.random() * 0.05
-                    miner.pending += reward
-                    miner.last_block_at = now
-                    feed.push("block", f"BLOCK #{miner.blocks_found:04d} found  +{reward:.4f} USDC pending")
-
-                if miner.pending > 0 and now - miner.last_block_at > 4:
-                    moved = miner.pending
-                    miner.balance += moved
-                    miner.pending = 0.0
-                    feed.push("ok", f"confirmed +{moved:.4f} USDC")
+            # The "sim step" is gone. The agent's counters are updated
+            # only by real events: /portfolio poll increments wallet fields,
+            # /prompts poll increments open_prompts/received, and the
+            # respond_prompt success/failure updates answered/failed.
 
             # --- network: kick polls + drain ---
             if client:
@@ -915,18 +860,18 @@ def run(args: argparse.Namespace) -> int:
                         feed.push("err", f"portfolio: {res['_err'][:60]}")
                     else:
                         online = True
-                        miner.last_poll_at = now
+                        agent.last_poll_at = now
                         usdc_obj = res.get("usdc", {}) or {}
                         fcoin_obj = res.get("fcoin", {}) or {}
-                        miner.pool_balance_usdc = float(usdc_obj.get("total", 0.0))
-                        miner.pool_balance_fcoin = float(fcoin_obj.get("total", 0.0))
-                        feed.push("rpc", f"portfolio synced — {miner.pool_balance_usdc:.4f} USDC")
+                        agent.usdc_balance = float(usdc_obj.get("total", 0.0))
+                        agent.fcoin_balance = float(fcoin_obj.get("total", 0.0))
+                        feed.push("rpc", f"portfolio synced — {agent.usdc_balance:.4f} USDC")
                 elif tag == "prompts":
                     if "_err" in res:
                         pass
                     else:
                         items = res.get("prompts", []) or []
-                        miner.open_prompts = len(items)
+                        agent.open_prompts = len(items)
                         for it in items:
                             pid = str(it.get("id", ""))
                             if not pid or pid in last_seen_prompts:
@@ -940,7 +885,7 @@ def run(args: argparse.Namespace) -> int:
                                 received_at=time.time(),
                             )
                             inbox.add(task)
-                            miner.tasks_received += 1
+                            agent.received += 1
                             fee = it.get("fee_usdc", 0)
                             sub = it.get("submitter", "?")
                             prompt_text = clip(str(it.get("prompt", "")).replace("\n", " "), 40)
@@ -958,15 +903,15 @@ def run(args: argparse.Namespace) -> int:
                         if detail:
                             msg += f" — {detail[:60]}"
                         feed.push("err", msg)
-                        miner.tasks_failed += 1
+                        agent.failed += 1
                     else:
-                        miner.tasks_answered += 1
+                        agent.answered += 1
                         fee_earned = 0.0
                         if isinstance(res, dict):
                             fee_earned = float(res.get("paid_out_usdc", 0) or 0)
                         if fee_earned <= 0:
                             fee_earned = 0.001
-                        miner.balance += fee_earned
+                        agent.usdc_balance += fee_earned
                         feed.push("ans", f"answered {task_id[:8]}  +{fee_earned:.4f} USDC")
             http_results.clear()
 
@@ -975,7 +920,7 @@ def run(args: argparse.Namespace) -> int:
                 while True:
                     ev = sse_events.get_nowait()
                     if isinstance(ev.get("data"), dict) and ev["data"].get("type") == "prompt_request":
-                        miner.tasks_received += 1
+                        agent.received += 1
                         d = ev["data"]
                         pid = str(d.get("id", ""))
                         if pid and client is not None and pid not in pending_llm:
@@ -998,12 +943,12 @@ def run(args: argparse.Namespace) -> int:
                         http.submit(tag, client.respond_prompt, task_id, payload)
                 else:
                     feed.push("err", f"LLM failed for {task_id[:8]}: {payload[:80]}")
-                    miner.tasks_failed += 1
+                    agent.failed += 1
                 pending_llm.pop(task_id, None)
             llm_results.clear()
 
             # --- draw ---
-            sys.stdout.write(render(miner, feed, inbox, endpoint_url, online, cols, rows, paused))
+            sys.stdout.write(render(agent, feed, inbox, endpoint_url, online, cols, rows, paused))
             sys.stdout.flush()
 
             # --- input (only p and q) ---
@@ -1018,7 +963,7 @@ def run(args: argparse.Namespace) -> int:
                 feed.push("info", "paused" if paused else "resumed")
             elif k in ("u", "U"):
                 feed.push("info", "self-update requested — fetching latest...")
-                sys.stdout.write(render(miner, feed, inbox, endpoint_url, online, cols, rows, paused))
+                sys.stdout.write(render(agent, feed, inbox, endpoint_url, online, cols, rows, paused))
                 sys.stdout.flush()
                 # Shutdown gracefully first
                 http.shutdown()
