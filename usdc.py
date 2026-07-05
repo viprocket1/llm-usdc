@@ -73,7 +73,7 @@ NETWORK_POLL_PROMPTS = 6.0
 SSE_RECONNECT_BACKOFF = 3.0
 LLM_TIMEOUT = 30
 
-__version__ = "1.5.2"
+__version__ = "1.6.0"
 # We use the GitHub API instead of raw.githubusercontent.com because the raw
 # CDN caches stale content for minutes after a push. The API always returns
 # the fresh file. See https://docs.github.com/en/rest/repos/contents
@@ -1201,10 +1201,79 @@ def main() -> int:
     p.add_argument("--no-update", action="store_true",
                    help="skip the auto-update check on startup")
     p.add_argument("--version", action="store_true", help="print version and exit")
+
+    p.add_argument("--prompts", action="store_true",
+                   help="list open marketplace prompts and exit")
+    p.add_argument("--responses", action="store_true",
+                   help="list all responses (use --responses-of AGENT to filter) and exit")
+    p.add_argument("--responses-of", metavar="AGENT", default="",
+                   help="filter --responses by responding agent")
+    p.add_argument("--earnings", action="store_true",
+                   help="show earnings ledger (use --earnings-of AGENT for one agent) and exit")
+    p.add_argument("--earnings-of", metavar="AGENT", default="",
+                   help="filter --earnings to one agent")
+    p.add_argument("--stats", action="store_true",
+                   help="show global marketplace stats and exit")
     args = p.parse_args()
 
     if args.version:
         print(f"usdc {__version__}  (endpoint: {args.endpoint or DEFAULT_ENDPOINT})")
+        return 0
+
+    # === marketplace query commands ===
+    if args.prompts or args.responses or args.earnings or args.stats:
+        import urllib.request, json as _json
+        endpoint = (args.endpoint or DEFAULT_ENDPOINT).rstrip("/")
+        try:
+            if args.prompts:
+                with urllib.request.urlopen(f"{endpoint}/prompts?status=all&limit=20", timeout=8) as r:
+                    d = _json.loads(r.read())
+                print(f"# {d.get('count',0)} prompts (latest)")
+                for p in d.get("prompts", []):
+                    print(f"  {p.get('id','')[:12]}  {p.get('status',''):10s}  "
+                          f"{p.get('fee_usdc',0):>6.3f} USDC  by {p.get('submitter','')}: "
+                          f"{str(p.get('prompt',''))[:60]!r}")
+            elif args.responses:
+                q = f"?agent={args.responses_of}&limit=20" if args.responses_of else "?limit=20"
+                with urllib.request.urlopen(f"{endpoint}/responses{q}", timeout=8) as r:
+                    d = _json.loads(r.read())
+                print(f"# {d.get('count',0)} responses (latest)")
+                for r in d.get("responses", []):
+                    print(f"  prompt={r.get('request_id','')[:12]}  by {r.get('agent_id','')}  "
+                          f"earned {r.get('fee_usdc',0):.3f} USDC")
+                    print(f"    Q: {str(r.get('prompt',''))[:80]!r}")
+                    print(f"    A: {str(r.get('response',''))[:80]!r}")
+            elif args.earnings:
+                q = f"?agent={args.earnings_of}" if args.earnings_of else ""
+                with urllib.request.urlopen(f"{endpoint}/earnings{q}", timeout=8) as r:
+                    d = _json.loads(r.read())
+                if "agent" in d:
+                    print(f"agent {d['agent']}: submitted={d.get('submitted',0)}  "
+                          f"answered={d.get('answered',0)}  "
+                          f"spent={d.get('spent_usdc',0):.4f} USDC  "
+                          f"earned={d.get('earned_usdc',0):.4f} USDC")
+                else:
+                    print(f"# {d.get('count',0)} agents; totals: {d.get('totals',{})}")
+                    for ag, row in sorted(d.get("agents",{}).items(),
+                                          key=lambda kv: -kv[1].get("earned_usdc",0)):
+                        print(f"  {ag:25s}  submitted={row.get('submitted',0):3d}  "
+                              f"answered={row.get('answered',0):3d}  "
+                              f"earned={row.get('earned_usdc',0):>10.4f} USDC")
+            elif args.stats:
+                with urllib.request.urlopen(f"{endpoint}/stats", timeout=8) as r:
+                    d = _json.loads(r.read())
+                p = d.get("prompts", {})
+                r = d.get("responses", {})
+                print(f"# marketplace stats")
+                print(f"  prompts:    {p.get('total',0)} total, by status: {p.get('by_status',{})}")
+                print(f"  fees locked: {p.get('total_fees_locked',0):.4f} USDC")
+                print(f"  responses:  {r.get('total',0)}")
+                print(f"  top earners:")
+                for e in d.get("top_earners", [])[:10]:
+                    print(f"    {e.get('agent',''):25s}  earned={e.get('earned_usdc',0):>10.4f} USDC")
+        except Exception as e:
+            print(f"error: {e}")
+            return 1
         return 0
 
     if args.update:
