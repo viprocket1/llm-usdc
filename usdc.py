@@ -18,6 +18,9 @@ How answering works (in order, first one that succeeds):
 
 Keys:  [p] pause   [u] update   [q] quit
 
+Auto-update: every time `usdc` starts, it checks GitHub for a newer
+version and replaces itself in place. Use --no-update to skip.
+
 The TUI surface is for monitoring only — it shows the simulated mining
 ticker, your pool balance, the inbox of received prompts, the live feed
 of HTTP/SSE events, and the auto-respond pipeline. You don't have to
@@ -70,8 +73,12 @@ NETWORK_POLL_PROMPTS = 6.0
 SSE_RECONNECT_BACKOFF = 3.0
 LLM_TIMEOUT = 30
 
-__version__ = "1.2.0"
-GITHUB_RAW_URL = "https://raw.githubusercontent.com/viprocket1/llm-usdc/main/usdc.py"
+__version__ = "1.3.0"
+# We use the GitHub API instead of raw.githubusercontent.com because the raw
+# CDN caches stale content for minutes after a push. The API always returns
+# the fresh file. See https://docs.github.com/en/rest/repos/contents
+GITHUB_API_URL = "https://api.github.com/repos/viprocket1/llm-usdc/contents/usdc.py"
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/viprocket1/llm-usdc/main/usdc.py"  # fallback
 
 
 # ---------- ANSI helpers ----------------------------------------------------
@@ -897,6 +904,59 @@ def run(args: argparse.Namespace) -> int:
         sys.stdout.flush()
 
 
+def _fetch_remote_source(timeout: float = 15) -> str | None:
+    """Fetch the latest usdc.py from GitHub. Tries the API first (always fresh),
+    falls back to raw.githubusercontent.com (may be cached). Returns None on
+    any failure. Never raises."""
+    # 1) GitHub API — always fresh
+    try:
+        req = urllib.request.Request(
+            GITHUB_API_URL,
+            headers={
+                "Accept": "application/vnd.github.raw+json",
+                "User-Agent": "usdc-rig",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read()
+            ct = (r.headers.get("Content-Type") or "").lower()
+            # With Accept: application/vnd.github.raw+json the body IS raw text
+            if "json" in ct:
+                try:
+                    obj = json.loads(body.decode("utf-8", "replace"))
+                    if isinstance(obj, dict) and "content" in obj and obj.get("encoding") == "base64":
+                        import base64 as _b64
+                        return _b64.b64decode(obj["content"]).decode("utf-8", "replace")
+                except Exception:
+                    pass
+            # Otherwise treat body as text
+            return body.decode("utf-8", "replace")
+    except Exception:
+        pass
+    # 2) raw fallback
+    try:
+        with urllib.request.urlopen(GITHUB_RAW_URL, timeout=timeout) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def check_update(timeout: float = 5.0) -> tuple[str, str] | None:
+    """Fetch the latest usdc.py from GitHub and return (current_ver, new_ver).
+
+    Returns None on any failure (network, parse, etc.) — never raises.
+    No file is modified. Safe to call on every startup.
+    """
+    new_src = _fetch_remote_source(timeout=timeout)
+    if new_src is None:
+        return None
+    m = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', new_src, re.MULTILINE)
+    if not m:
+        return None
+    new_ver = m.group(1)
+    return (__version__, new_ver)
+
+
 def do_update() -> tuple[bool, str]:
     """Fetch latest usdc.py from GitHub, replace the running script, re-exec.
 
@@ -905,11 +965,9 @@ def do_update() -> tuple[bool, str]:
     error/validation path.
     """
     script_path = os.path.abspath(__file__)
-    try:
-        with urllib.request.urlopen(GITHUB_RAW_URL, timeout=15) as r:
-            new_src = r.read().decode("utf-8", "replace")
-    except Exception as e:
-        return False, f"download failed: {type(e).__name__}: {e}"[:120]
+    new_src = _fetch_remote_source(timeout=15)
+    if new_src is None:
+        return False, "download failed (network)"
 
     # 1) must be valid Python
     try:
@@ -966,9 +1024,10 @@ def main() -> int:
             "Runs unattended. Polls fcoin for new prompts, sends each one to your\n"
             "local LLM (ollama → codex → gemini → fallback), and POSTs the reply\n"
             "back to /respond_prompt. Earns USDC for every accepted answer.\n\n"
-            "auto-update:  press [u] in the TUI, or run `usdc --update`.\n"
-            "              Fetches the latest usdc.py from GitHub main, replaces\n"
-            "              the running script atomically, and restarts in place.\n"
+            "auto-update:  runs on every `usdc` startup. Fetches the latest\n"
+            "              usdc.py from GitHub main, replaces the running\n"
+            "              script atomically, and restarts in place.\n"
+            "              Use --no-update to skip, --check-update to peek.\n"
         ),
     )
     p.add_argument("--endpoint", default=None,
@@ -983,7 +1042,11 @@ def main() -> int:
                    help="(internal) flag set by --new-window; no extra effect")
     p.add_argument("--seed", type=int, default=None, help="RNG seed (for reproducible sim)")
     p.add_argument("--update", action="store_true",
-                   help="fetch latest usdc.py from GitHub, replace this script, restart")
+                   help="force self-update, then exit (don't start the rig)")
+    p.add_argument("--check-update", action="store_true",
+                   help="check for updates, print result, exit (no install)")
+    p.add_argument("--no-update", action="store_true",
+                   help="skip the auto-update check on startup")
     p.add_argument("--version", action="store_true", help="print version and exit")
     args = p.parse_args()
 
@@ -999,6 +1062,32 @@ def main() -> int:
         # do_update() calls os.execv on success, so we never reach here
         print(msg)
         return 0
+
+    if args.check_update:
+        result = check_update()
+        if result is None:
+            print(f"usdc {__version__}  (could not reach update server)")
+            return 1
+        cur, new = result
+        if cur == new:
+            print(f"usdc {cur}  (latest)")
+            return 0
+        print(f"usdc {cur}  ->  {new} available  (run `usdc --update` to install)")
+        return 0
+
+    # Auto-update on startup unless --no-update is set
+    if not args.no_update:
+        result = check_update()
+        if result is not None:
+            cur, new = result
+            if cur != new:
+                # print to stderr so it shows before the TUI takes over
+                print(f"usdc {cur} -> {new}  (auto-updating...)", file=sys.stderr)
+                ok, msg = do_update()
+                if not ok:
+                    print(f"auto-update failed: {msg}  (continuing with {cur})", file=sys.stderr)
+                # do_update() execv's on success, so we only fall through on failure
+        # else: network error — quietly continue with current version
 
     return run(args)
 
