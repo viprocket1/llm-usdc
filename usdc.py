@@ -73,7 +73,7 @@ NETWORK_POLL_PROMPTS = 6.0
 SSE_RECONNECT_BACKOFF = 3.0
 LLM_TIMEOUT = 30
 
-__version__ = "1.3.0"
+__version__ = "1.5.0"
 # We use the GitHub API instead of raw.githubusercontent.com because the raw
 # CDN caches stale content for minutes after a push. The API always returns
 # the fresh file. See https://docs.github.com/en/rest/repos/contents
@@ -180,62 +180,199 @@ class Inbox:
 
 # ---------- LLM responder --------------------------------------------------
 
-def make_llm_response(prompt: str) -> str:
-    """Call the user's local LLM to answer the prompt.
+# --- LLM backend registry -------------------------------------------------
+#
+# Each backend is a callable that takes the prompt and either:
+#   - returns a string (>=5 chars) on success
+#   - returns None on failure (clamped, logged internally)
+#   - raises an exception (caught by the dispatcher)
+#
+# The dispatcher tries them in order. First non-None wins. This means a
+# user can have ollama + codex + claude all installed and the rig will
+# use ollama for everything, falling back to codex if ollama is down,
+# and so on. Each backend is self-contained and stateless, so they can
+# also be run in parallel if speed matters.
 
-    Order of attempts:
-      1. ollama at $OLLAMA_HOST  (default http://127.0.0.1:11434)  model $OLLAMA_MODEL (default llama3.2)
-      2. `codex -q --no-cache <prompt>`  (headless, uses your OpenAI key)
-      3. `gemini -p <prompt>`            (headless, uses your Google key)
-      4. Fallback stub "hi back" — keeps the agent earning even with no LLM
+def _llm_ollama(text: str):
+    host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+    model = os.environ.get("OLLAMA_MODEL", "llama3.2")
+    body = json.dumps({"model": model, "prompt": text, "stream": False}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{host}/api/generate", data=body,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as r:
+        out = json.loads(r.read().decode("utf-8", "replace"))
+    return (out.get("response") or "").strip() or None
+
+
+# --- LLM binary cache -----------------------------------------------------
+# shutil.which() per call is cheap but not free; cache results.
+_LLM_BIN_CACHE: dict[str, bool] = {}
+
+def _has_binary(name: str) -> bool:
+    """True if the named binary is on PATH and executable."""
+    if name in _LLM_BIN_CACHE:
+        return _LLM_BIN_CACHE[name]
+    # Skip "python" and "python3" — always available
+    if name in ("python", "python3"):
+        _LLM_BIN_CACHE[name] = True
+        return True
+    found = shutil.which(name) is not None
+    _LLM_BIN_CACHE[name] = found
+    return found
+
+
+def _llm_subprocess(cmd, text: str, stdin: bool = False):
+    """Run an LLM CLI and return its stdout (stripped), or None.
+
+    Skips instantly if the binary isn't on PATH (no 30s timeout penalty).
     """
-    text = (prompt or "").strip()
-    last_err = ""
-
-    # 1) ollama
+    if cmd and not _has_binary(cmd[0]):
+        return None
     try:
-        host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
-        model = os.environ.get("OLLAMA_MODEL", "llama3.2")
-        body = json.dumps({"model": model, "prompt": text, "stream": False}).encode("utf-8")
+        kwargs = dict(capture_output=True, text=True, timeout=LLM_TIMEOUT, check=False)
+        if stdin:
+            kwargs["input"] = text
+            return subprocess.run(cmd, **kwargs).stdout.strip() or None
+        return subprocess.run(cmd + [text], **kwargs).stdout.strip() or None
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+# (name, callable). The order here is the priority order. To prefer a
+# different backend, set USDC_LLM_FIRST=<name> in the environment.
+LLM_BACKENDS = [
+    ("ollama",       _llm_ollama),
+    ("claude",       lambda t: _llm_subprocess(["claude", "-p"], t)),
+    ("codex",        lambda t: _llm_subprocess(["codex", "exec", "--no-cache", "-q"], t)),
+    ("gemini",       lambda t: _llm_subprocess(["gemini", "-p"], t)),
+    ("opencode",     lambda t: _llm_subprocess(["opencode", "run"], t)),
+    ("aider",        lambda t: _llm_subprocess(["aider", "--no-auto-commits", "--message"], t)),
+    ("goose",        lambda t: _llm_subprocess(["goose", "run", "--no-session"], t)),
+    ("qwen",         lambda t: _llm_subprocess(["qwen", "-p"], t)),
+    # ── prompt-as-argument autonomous agents ──
+    ("hermes",       lambda t: _llm_subprocess(["hermes", "run"], t)),
+    ("openclaw",     lambda t: _llm_subprocess(["openclaw", "run"], t) or _llm_subprocess(["claw", "run"], t)),
+    ("openhands",    lambda t: _llm_subprocess(["openhands", "-t"], t)),
+    ("agent-zero",   lambda t: _llm_subprocess(["agent-zero", "--prompt"], t)),
+    ("openmanus",    lambda t: _llm_subprocess(["python", "-m", "openmanus"], t)),
+    ("autogpt",      lambda t: _llm_subprocess(["autogpt", "--prompt"], t)),
+    ("superagi",     lambda t: _llm_subprocess(["superagi", "run", "--prompt"], t)),
+    ("crewai",       lambda t: _llm_subprocess(["crewai", "run", "--prompt"], t)),
+    ("metagpt",      lambda t: _llm_subprocess(["metagpt"], t)),
+    ("camel",        lambda t: _llm_subprocess(["camel", "run", "--prompt"], t)),
+]
+
+
+def _try_anthropic_api(text: str):
+    """Optional direct Anthropic API call (skipped unless the SDK is importable)."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    try:
+        # Use urllib to avoid pulling in the anthropic SDK as a dep
+        body = json.dumps({
+            "model": os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5"),
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": text}],
+        }).encode("utf-8")
         req = urllib.request.Request(
-            f"{host}/api/generate", data=body,
-            headers={"Content-Type": "application/json"}, method="POST",
+            "https://api.anthropic.com/v1/messages", data=body,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            }, method="POST",
         )
         with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as r:
             out = json.loads(r.read().decode("utf-8", "replace"))
-        reply = (out.get("response") or "").strip()
-        if reply and len(reply) >= 5:
-            return reply[:2000]
-        last_err = "ollama: empty response"
-    except Exception as e:
-        last_err = f"ollama: {type(e).__name__}"
+        for blk in (out.get("content") or []):
+            if blk.get("type") == "text":
+                return (blk.get("text") or "").strip() or None
+    except Exception:
+        return None
+    return None
 
-    # 2) codex
+
+def _try_openai_api(text: str):
+    """Optional direct OpenAI API call (skipped unless OPENAI_API_KEY set)."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return None
     try:
-        result = subprocess.run(
-            ["codex", "-q", "--no-cache", text],
-            capture_output=True, text=True, timeout=LLM_TIMEOUT, check=False,
+        body = json.dumps({
+            "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+            "messages": [{"role": "user", "content": text}],
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions", data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }, method="POST",
         )
-        out = (result.stdout or "").strip()
-        if out and len(out) >= 5:
-            return out[:2000]
-        last_err = f"codex: rc={result.returncode} stderr={(result.stderr or '')[:60]}"
-    except Exception as e:
-        last_err = f"codex: {type(e).__name__}"
+        with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as r:
+            out = json.loads(r.read().decode("utf-8", "replace"))
+        return (out["choices"][0]["message"]["content"] or "").strip() or None
+    except Exception:
+        return None
 
-    # 3) gemini
-    try:
-        result = subprocess.run(
-            ["gemini", "-p", text],
-            capture_output=True, text=True, timeout=LLM_TIMEOUT, check=False,
-        )
-        out = (result.stdout or "").strip()
-        if out and len(out) >= 5:
-            return out[:2000]
-        last_err = f"gemini: rc={result.returncode} stderr={(result.stderr or '')[:60]}"
-    except Exception as e:
-        last_err = f"gemini: {type(e).__name__}"
 
+# Add API-direct backends (only attempt if the env key is set; otherwise skip fast)
+LLM_BACKENDS_WITH_API = LLM_BACKENDS + [
+    ("anthropic-api", _try_anthropic_api),
+    ("openai-api",    _try_openai_api),
+]
+
+
+def make_llm_response(prompt: str) -> str:
+    """Call every available LLM backend in order; first success wins.
+
+    Tries in this order:
+      1. ollama  ($OLLAMA_HOST / $OLLAMA_MODEL)
+      2. claude  (`claude -p`)
+      3. codex   (`codex exec --no-cache -q`)
+      4. gemini  (`gemini -p`)
+      5. opencode (`opencode run`)
+      6. aider   (`aider --no-auto-commits --message`)
+      7. goose   (`goose run --no-session`)
+      8. qwen    (`qwen -p`)
+      9. hermes  (`hermes run`)
+     10. openclaw (`openclaw run` or `claw run`)
+     11. openhands (`openhands -t`)
+     12. agent-zero (`agent-zero --prompt`)
+     13. openmanus (`python -m openmanus`)
+     14. autogpt (`autogpt --prompt`)
+     15. superagi (`superagi run --prompt`)
+     16. crewai (`crewai run --prompt`)
+     17. metagpt (`metagpt`)
+     18. camel  (`camel run --prompt`)
+     19. anthropic API (if ANTHROPIC_API_KEY is set)
+     20. openai   API (if OPENAI_API_KEY is set)
+     21. Fallback: "hi back" (still earns the fee)
+    """
+    text = (prompt or "").strip()
+
+    # Allow reordering: USDC_LLM_FIRST=<name> promotes that backend to the front.
+    preferred = os.environ.get("USDC_LLM_FIRST", "").strip()
+    backends = LLM_BACKENDS_WITH_API
+    if preferred:
+        backends = sorted(backends, key=lambda b: (0 if b[0] == preferred else 1))
+
+    for name, fn in backends:
+        if fn is None:
+            continue
+        try:
+            reply = fn(text)
+        except Exception:
+            continue
+        if reply and len(reply.strip()) >= 5:
+            return reply.strip()[:2000]
+
+    # 11) fallback
     return "hi back"
 
 
