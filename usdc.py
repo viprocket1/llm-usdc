@@ -81,7 +81,7 @@ NETWORK_POLL_PROMPTS = 6.0
 SSE_RECONNECT_BACKOFF = 3.0
 LLM_TIMEOUT = 30
 
-__version__ = "1.8.0"
+__version__ = "1.9.0"
 # We use the GitHub API instead of raw.githubusercontent.com because the raw
 # CDN caches stale content for minutes after a push. The API always returns
 # the fresh file. See https://docs.github.com/en/rest/repos/contents
@@ -374,31 +374,15 @@ LLM_BACKENDS_WITH_API = LLM_BACKENDS + [
 ]
 
 
-def make_llm_response(prompt: str) -> str:
+def make_llm_response(prompt: str) -> tuple[str, str]:
     """Call every available LLM backend in order; first success wins.
 
-    Tries in this order:
-      1. ollama  ($OLLAMA_HOST / $OLLAMA_MODEL)
-      2. claude  (`claude -p`)
-      3. codex   (`codex exec --no-cache -q`)
-      4. gemini  (`gemini -p`)
-      5. opencode (`opencode run`)
-      6. aider   (`aider --no-auto-commits --message`)
-      7. goose   (`goose run --no-session`)
-      8. qwen    (`qwen -p`)
-      9. hermes  (`hermes run`)
-     10. openclaw (`openclaw run` or `claw run`)
-     11. openhands (`openhands -t`)
-     12. agent-zero (`agent-zero --prompt`)
-     13. openmanus (`python -m openmanus`)
-     14. autogpt (`autogpt --prompt`)
-     15. superagi (`superagi run --prompt`)
-     16. crewai (`crewai run --prompt`)
-     17. metagpt (`metagpt`)
-     18. camel  (`camel run --prompt`)
-     19. anthropic API (if ANTHROPIC_API_KEY is set)
-     20. openai   API (if OPENAI_API_KEY is set)
-     21. Fallback: "hi back" (still earns the fee)
+    Returns (reply_text, backend_name) so the rig can send the backend
+    name as X-LLM-Backend provenance. Returns ("y", "") for the fallback —
+    but the rig's dispatch loop REFUSES to post the fallback when the
+    prompt has a min_response_words requirement (or default >= 3), so the
+    server won't accept it. To override that, set USDC_LLM_FIRST to a
+    real backend, or use USDC_ALLOW_STUB=1 to override the refusal.
     """
     text = (prompt or "").strip()
 
@@ -416,10 +400,10 @@ def make_llm_response(prompt: str) -> str:
         except Exception:
             continue
         if reply and len(reply.strip()) >= 5:
-            return reply.strip()[:2000]
+            return reply.strip()[:2000], name
 
     # 21) fallback — 1 char so it passes the fcoin min length even at 1
-    return "y"
+    return "y", ""
 
 
 # ---------- fcoin HTTP client (synchronous, called from worker threads) ----
@@ -467,11 +451,35 @@ class FcoinClient:
     def prompts(self, status: str = "open") -> dict:
         return self.get(f"/prompts?status={status}")
 
-    def respond_prompt(self, request_id: str, response: str) -> dict:
-        return self.post("/respond_prompt", {
+    def respond_prompt(self, request_id: str, response: str, backend: str = "") -> dict:
+        """POST a response. Optional `backend` is sent as the X-LLM-Backend
+        header so the server can record provenance and enforce any
+        allowed_backends whitelist the submitter set."""
+        # When the rig posts via HTTPRequest, the headers argument lets
+        # us set X-LLM-Backend alongside the default X-Agent-ID.
+        url = f"{self.base}/respond_prompt"
+        body = json.dumps({
             "request_id": request_id,
-            "response": response,
-        })
+            "response":   response,
+        }).encode("utf-8")
+        headers = {
+            "X-Agent-ID":   self.agent_id,
+            "Content-Type": "application/json",
+        }
+        if backend:
+            headers["X-LLM-Backend"] = backend
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT) as r:
+                return json.loads(r.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as e:
+            try:
+                detail = e.read().decode("utf-8", "replace")[:200]
+            except Exception:
+                detail = ""
+            return {"_err": f"HTTP {e.code}", "_detail": detail}
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            return {"_err": str(e)[:120]}
 
 
 # ---------- ThreadPool wrapper for non-blocking calls ----------------------
@@ -593,10 +601,13 @@ class LLMWorker:
             return
         def wrap():
             try:
-                reply = make_llm_response(prompt)
-                return ("ok", reply)
+                # Returns (status, reply, backend_name) so the rig can
+                # send X-LLM-Backend provenance. Backend is "" if the
+                # fallback was used.
+                reply, backend = make_llm_response(prompt)
+                return ("ok", reply, backend)
             except Exception as e:
-                return ("err", f"{type(e).__name__}: {e}"[:120])
+                return ("err", f"{type(e).__name__}: {e}"[:120], "")
         fut = self._pool.submit(wrap)
         self._inflight[task_id] = fut
         fut.add_done_callback(lambda f, t=task_id: self._on_done(t, f))
@@ -1001,15 +1012,29 @@ def run(args: argparse.Namespace) -> int:
 
             # --- drain LLM results, dispatch respond_prompt ---
             llm.drain(llm_results)
-            for task_id, status, payload in llm_results:
+            for task_id, status, payload, backend in llm_results:
                 if status == "ok":
                     if client is None:
                         feed.push("llm", f"LLM answered {task_id[:8]}  (offline, not posting)")
                     else:
-                        feed.push("llm", f"LLM answered {task_id[:8]}  →  posting to fcoin")
+                        # Refuse to post the stub fallback. fcoin's server-side
+                        # check will reject anything <3 words by default, so
+                        # sending "y" only burns the request without earning
+                        # the fee. Honor USDC_ALLOW_STUB=1 to override (e.g.
+                        # for submitters who set min_response_words=1).
+                        is_stub = (not backend) or payload.strip() in ("y", "hi back")
+                        if is_stub and not os.environ.get("USDC_ALLOW_STUB"):
+                            feed.push("warn",
+                                      f"skip stub for {task_id[:8]}: no LLM backend produced a real answer "
+                                      f"(set USDC_LLM_FIRST=<backend> or USDC_ALLOW_STUB=1 to override)")
+                            agent.failed += 1
+                            pending_llm.pop(task_id, None)
+                            continue
+                        prov = f" via {backend}" if backend else ""
+                        feed.push("llm", f"LLM answered {task_id[:8]}{prov}  →  posting to fcoin")
                         tag = f"answer:{task_id}"
                         inflight_tags.add(tag)
-                        http.submit(tag, client.respond_prompt, task_id, payload)
+                        http.submit(tag, client.respond_prompt, task_id, payload, backend)
                 else:
                     feed.push("err", f"LLM failed for {task_id[:8]}: {payload[:80]}")
                     agent.failed += 1
