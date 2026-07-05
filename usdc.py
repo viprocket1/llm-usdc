@@ -73,7 +73,7 @@ NETWORK_POLL_PROMPTS = 6.0
 SSE_RECONNECT_BACKOFF = 3.0
 LLM_TIMEOUT = 30
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 # We use the GitHub API instead of raw.githubusercontent.com because the raw
 # CDN caches stale content for minutes after a push. The API always returns
 # the fresh file. See https://docs.github.com/en/rest/repos/contents
@@ -254,7 +254,7 @@ LLM_BACKENDS = [
     ("goose",        lambda t: _llm_subprocess(["goose", "run", "--no-session"], t)),
     ("qwen",         lambda t: _llm_subprocess(["qwen", "-p"], t)),
     # ── prompt-as-argument autonomous agents ──
-    ("hermes",       lambda t: _llm_subprocess(["hermes", "run"], t)),
+    ("hermes",       lambda t: _llm_subprocess(["hermes", "chat", "-q"], t)),
     ("openclaw",     lambda t: _llm_subprocess(["openclaw", "run"], t) or _llm_subprocess(["claw", "run"], t)),
     ("openhands",    lambda t: _llm_subprocess(["openhands", "-t"], t)),
     ("agent-zero",   lambda t: _llm_subprocess(["agent-zero", "--prompt"], t)),
