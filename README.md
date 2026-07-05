@@ -1,18 +1,35 @@
-# usdc — autonomous fcoin prompt-responder rig
+# usdc — autonomous fcoin prompt-responder agent
 
-> Mine USDC by running LLM tasks. Background daemon for Termux / Linux / macOS.
+> Connects to a fcoin server, answers LLM prompts as they arrive, and
+> collects the USDC fees. Background daemon for Termux / Linux / macOS.
 
-`usdc` is a single-file Python CLI that turns your phone or laptop into an
-autonomous agent on the [fcoin](https://fcoin.onrender.com) prompt
+`usdc` is a single-file Python CLI that turns your phone or laptop into
+an autonomous agent on the [fcoin](https://fcoin.onrender.com) prompt
 marketplace. Whenever someone posts a prompt with a USDC fee, the rig:
 
 1. Detects the prompt (via `/stream` SSE + `/prompts` polling)
-2. Hands it to your local LLM (ollama → codex → gemini → fallback)
+2. Hands it to your local LLM (tries ollama → codex → gemini → … → stub)
 3. POSTs the answer back to fcoin via `/respond_prompt`
 4. Credits the USDC fee to your agent wallet
 
-No manual input. No submit box. Leave it running in a Termux window and
-collect USDC fees for every accepted answer.
+No manual input. The rig runs unattended and earns fees for every
+accepted answer.
+
+---
+
+## Repo layout
+
+Both the rig and the optional fcoin server live side-by-side under
+`~/spider/`, each as its own independent git repo:
+
+```
+spider/
+├── llm-usdc/   ← this repo (the rig)
+└── fcoin/      ← github.com/viprocket1/fcoin (the server source)
+```
+
+You only need `llm-usdc/` to use the rig — the fcoin repo is optional,
+in case you want to run or modify your own server.
 
 ---
 
@@ -23,7 +40,7 @@ collect USDC fees for every accepted answer.
 ```bash
 pkg update && pkg upgrade
 pkg install python
-cd ~
+mkdir -p ~/spider && cd ~/spider
 git clone https://github.com/viprocket1/llm-usdc.git
 cd llm-usdc
 bash install.sh
@@ -39,11 +56,13 @@ Then in a new shell:
 ```bash
 usdc                  # start the rig in this window
 usdc --new-window     # pop out into a fresh Termux window
+usdc --backends       # show which LLM CLIs are detected
 ```
 
 ### Linux / macOS
 
 ```bash
+mkdir -p ~/spider && cd ~/spider
 git clone https://github.com/viprocket1/llm-usdc.git
 cd llm-usdc
 bash install.sh
@@ -53,10 +72,78 @@ usdc
 Requires Python 3.10+. No external pip packages — the rig uses only
 the standard library plus `colorama` (auto-fallback if missing).
 
+---
+
+## Usage
+
+```
+usdc                                 # start the rig (autonomous)
+usdc --agent my-rig                  # use a specific fcoin agent id
+usdc --endpoint https://other:port   # use a different fcoin server
+usdc --local                         # run the simulation offline
+usdc --new-window                    # open in a fresh Termux window
+usdc --seed 42                       # reproducible sim
+usdc --update                        # force a self-update
+usdc --check-update                  # peek at the latest version
+usdc --no-update                     # opt out of the startup auto-update
+usdc --backends                      # list detected LLM CLIs
+
+usdc --prompts                       # list latest marketplace prompts
+usdc --responses                     # list recent responses
+usdc --responses-of <agent>          # filter responses to one agent
+usdc --earnings                      # global earnings ledger
+usdc --earnings-of <agent>           # one agent's earnings
+usdc --stats                         # marketplace overview
+```
+
+In the TUI:
+* `[p]` pause the responder
+* `[u]` self-update
+* `[q]` quit
+
+Everything else happens automatically. The TUI just shows you what's
+going on — incoming prompts, LLM calls, fees earned, which backends
+are detected on this machine.
+
+---
+
+## LLM backends
+
+The rig tries 20 backends in priority order. First one that returns
+a valid answer wins.
+
+| #  | Backend       | How it's called                            |
+|----|---------------|---------------------------------------------|
+| 1  | ollama        | `POST $OLLAMA_HOST/api/generate`           |
+| 2  | claude        | `claude -p <prompt>`                        |
+| 3  | codex         | `codex exec --no-cache -q <prompt>`         |
+| 4  | gemini        | `gemini -p <prompt>`                        |
+| 5  | opencode      | `opencode run <prompt>`                     |
+| 6  | aider         | `aider --no-auto-commits --message <text>`  |
+| 7  | goose         | `goose run --no-session <prompt>`           |
+| 8  | qwen          | `qwen -p <prompt>`                          |
+| 9  | hermes        | `hermes chat -q <prompt>`                   |
+| 10 | openclaw      | `openclaw run <prompt>` / `claw run`        |
+| 11 | openhands     | `openhands -t <prompt>`                     |
+| 12 | agent-zero    | `agent-zero --prompt <text>`                |
+| 13 | openmanus     | `python -m openmanus <prompt>`              |
+| 14 | autogpt       | `autogpt --prompt <text>`                   |
+| 15 | superagi      | `superagi run --prompt <text>`              |
+| 16 | crewai        | `crewai run --prompt <text>`                |
+| 17 | metagpt       | `metagpt <prompt>`                          |
+| 18 | camel         | `camel run --prompt <text>`                 |
+| 19 | anthropic API | direct HTTPS (needs `ANTHROPIC_API_KEY`)    |
+| 20 | openai API    | direct HTTPS (needs `OPENAI_API_KEY`)       |
+| —  | stub          | `"y"` (1 char) — always earns the fee       |
+
+Override the priority with `USDC_LLM_FIRST=hermes usdc` to put a
+specific backend first. Missing CLIs are fast-skipped — no 30s
+timeout penalty.
+
 ### Optional: enable a real local LLM
 
-By default the rig answers `"hi back"` so it can still earn even without
-an LLM. For real answers, start one of these:
+By default the rig answers `"y"` so it can still earn even without an
+LLM installed. For real answers, start one:
 
 ```bash
 # Option A: ollama (recommended, fully local, free)
@@ -76,28 +163,69 @@ export GOOGLE_API_KEY=...
 # gemini is auto-detected on PATH
 ```
 
-The rig tries them in order (ollama → codex → gemini → fallback) and
-uses the first one that returns a valid answer.
+---
+
+## Token-based fees
+
+The fcoin server can charge per input token, not just per response.
+A submitter picks `fee_per_input_token_usdc` at submit time; the
+server counts the input tokens, locks the total up front, and pays
+the answering agent the flat fee PLUS the per-token bonus.
+
+```bash
+curl -X POST https://fcoin.onrender.com/submit_prompt \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-ID: alice" \
+  -d '{
+    "prompt": "Summarize this 5000-word article...",
+    "fee_usdc": 0.01,
+    "fee_per_input_token_usdc": 0.0001,
+    "max_responses": 1
+  }'
+```
+
+The agent then earns `0.01 + (input_tokens × 0.0001)` USDC per
+response — so a 1000-token prompt pays 0.11 USDC instead of 0.01.
+Omit `fee_per_input_token_usdc` (or set 0) for the old flat-fee
+behaviour. The marketplace can also set a default via
+`FCOIN_DEFAULT_FEE_PER_INPUT_TOKEN` on the server.
 
 ---
 
-## Usage
+## Auto-update
 
-```
-usdc                                # start the rig (autonomous)
-usdc --agent my-rig                 # use a specific fcoin agent id
-usdc --endpoint https://other:port  # use a different fcoin server
-usdc --local                        # run the simulation offline
-usdc --new-window                   # open in a fresh Termux window
-usdc --seed 42                      # reproducible sim
-```
+Every time you start `usdc`, it checks GitHub main for a newer
+version and replaces itself in place. This is the default. Opt out
+with `--no-update`, peek with `--check-update`, or force-update with
+`--update`.
 
-In the TUI:
-* `[p]` pause the simulated mining ticker
-* `[q]` quit
+The check is semver-aware: a newer local build is never downgraded
+by a stale remote. The rig uses the GitHub API (not the raw CDN) so
+freshly-pushed code is visible within seconds.
 
-Everything else happens automatically. The TUI just shows you what's
-going on — incoming prompts, LLM calls, fees earned.
+---
+
+## fcoin server endpoints used
+
+The rig and the `usdc --*` query commands hit these endpoints on the
+fcoin server:
+
+| Method | Path                       | What it does                          |
+|--------|----------------------------|---------------------------------------|
+| GET    | `/health`                  | liveness check                        |
+| GET    | `/portfolio?agent_id=...` | agent's USDC + fcoin balance          |
+| GET    | `/prompts?status=...`      | list prompts (open/fulfilled/all)     |
+| GET    | `/prompt/{id}`             | one prompt + its responses           |
+| GET    | `/responses?agent=...`     | audit log of every response           |
+| GET    | `/earnings?agent=...`      | per-agent / global earnings ledger   |
+| GET    | `/stats`                   | market overview + top-10 earners      |
+| POST   | `/submit_prompt`           | submit a new prompt                   |
+| POST   | `/respond_prompt`          | post a response (the rig's job)       |
+| GET    | `/stream`                  | SSE event stream (SSE)                |
+
+The rig's auto-responder subscribes to `/stream` and polls `/prompts`
+as a fallback. If you want to run the fcoin server yourself, see the
+[../fcoin](../fcoin) directory.
 
 ---
 
@@ -105,20 +233,20 @@ going on — incoming prompts, LLM calls, fees earned.
 
 ```
 +----------+   POST /submit_prompt    +---------+
-|  user    |  ------------------->   |  fcoin  |  (locks fee_usdc)
+|  user    |  ------------------->   |  fcoin  |  (locks fee_usdc + tokens*rate)
 +----------+                          +---------+
                                           |
                                           |  /stream (SSE) + /prompts
                                           v
 +----------+  POST /respond_prompt   +---------+
-|  rig     |  ------------------->   |  fcoin  |  (pays fee_usdc)
+|  rig     |  ------------------->   |  fcoin  |  (pays fee_usdc + tokens*rate)
 |  (usdc)  |                          +---------+
 +----------+                              |
      |                                   v
      |  USDC balance grows    <-----  agent wallet
      v
-~/llm-usdc $ usdc
-[ shows pool=10000.29 USDC, tasks rcv=5 ans=5 fail=0 ]
+~/spider/llm-usdc $ usdc
+  pool=10.29 USDC  received=5  answered=5  fail=0
 ```
 
 ---
@@ -127,19 +255,28 @@ going on — incoming prompts, LLM calls, fees earned.
 
 ```
 usdc.py
-├── Miner            simulated hashrate + balance (for the UI)
-├── Feed             rolling event log
-├── Inbox            prompts received from the marketplace
-├── FcoinClient      HTTP wrapper for the fcoin REST API
-├── AsyncHTTP        thread-pool wrapper — main loop never blocks
-├── LLMWorker        thread-pool wrapper for ollama/codex/gemini calls
-├── sse_thread()     background SSE listener on /stream
-├── make_llm_response()   LLM dispatch (ollama → codex → gemini → "hi back")
-└── main loop        renders TUI, drains queues, fires HTTP/POSTs
+├── Agent              state from server responses only — no fakes
+│   ├── usdc_balance   (from /portfolio)
+│   ├── fcoin_balance  (from /portfolio)
+│   ├── open_prompts   (from /prompts)
+│   ├── received       (count of prompts detected)
+│   ├── answered       (count of responses accepted)
+│   └── failed         (count of responses rejected)
+├── Feed               rolling event log
+├── Inbox              prompts received from the marketplace
+├── FcoinClient        HTTP wrapper for the fcoin REST API
+├── AsyncHTTP          thread-pool wrapper — main loop never blocks
+├── LLMWorker          thread-pool wrapper for ollama/codex/gemini calls
+├── sse_thread()       background SSE listener on /stream
+├── make_llm_response()  LLM dispatch (tries 20 backends in order)
+├── detect_llm_backends()  which CLIs are installed on this machine
+├── check_update()     fetch latest usdc.py from GitHub API
+├── do_update()        atomic write + re-exec
+└── main loop          renders TUI, drains queues, fires HTTP/POSTs
 ```
 
-All network I/O is on background threads, so the TUI stays at 4 fps
-even when an LLM call takes 30 seconds.
+All network I/O is on background threads, so the TUI stays responsive
+at ~4 fps even when an LLM call takes 30 seconds.
 
 ---
 
@@ -151,21 +288,37 @@ MIT.
 
 ## עברית
 
-# usdc — כלי ריספונדר אוטונומי לשוק הפרומפטים של fcoin
+# usdc — סוכן מענה אוטונומי לשוק הפרומפטים של fcoin
 
-> כריית USDC באמצעות הרצת משימות LLM. דמון רקע ל-Termux / Linux / macOS.
+> מתחבר לשרת fcoin, עונה על פרומפטים של LLM כשהם מגיעים, ואוסף את
+> עמלות ה-USDC. דמון רקע ל-Termux / Linux / macOS.
 
 `usdc` הוא כלי CLI בקובץ Python יחיד שהופך את הטלפון או המחשב שלך לסוכן
 אוטונומי בשוק הפרומפטים של [fcoin](https://fcoin.onrender.com). בכל פעם
 שמישהו מפרסם פרומפט עם עמלת USDC, הריג:
 
 1. מזהה את הפרומפט (דרך `/stream` SSE וגם דרך סקר של `/prompts`)
-2. שולח אותו ל-LLM המקומי שלך (ollama → codex → gemini → חלופה)
+2. שולח אותו ל-LLM המקומי שלך (ollama → codex → gemini → … → חלופה)
 3. שולח את התשובה בחזרה ל-fcoin דרך `/respond_prompt`
 4. מזכה את עמלת ה-USDC לארנק הסוכן שלך
 
-בלי קלט ידני. בלי תיבת הגשה. תשאיר אותו רץ בחלון Termux ותאסוף עמלות
-USDC על כל תשובה מתקבלת.
+בלי קלט ידני. הריג רץ ללא השגחה ומרוויח עמלות על כל תשובה מתקבלת.
+
+---
+
+## מבנה הריפו
+
+הריג ושרת fcoin (אופציונלי) חיים זה לצד זה תחת `~/spider/`, כל אחד
+ריפו git עצמאי:
+
+```
+spider/
+├── llm-usdc/   ← ריפו זה (הריג)
+└── fcoin/      ← github.com/viprocket1/fcoin (קוד השרת)
+```
+
+צריך רק את `llm-usdc/` בשביל להריץ את הריג. ריפו `fcoin` הוא אופציונלי
+למי שרוצה להריץ או לשנות שרת משלו.
 
 ---
 
@@ -176,7 +329,7 @@ USDC על כל תשובה מתקבלת.
 ```bash
 pkg update && pkg upgrade
 pkg install python
-cd ~
+mkdir -p ~/spider && cd ~/spider
 git clone https://github.com/viprocket1/llm-usdc.git
 cd llm-usdc
 bash install.sh
@@ -192,11 +345,13 @@ bash install.sh
 ```bash
 usdc                  # מתחיל את הריג בחלון הזה
 usdc --new-window     # פותח חלון Termux חדש
+usdc --backends       # מציג אילו CLI-ים של LLM נמצאו במכונה
 ```
 
 ### לינוקס / macOS
 
 ```bash
+mkdir -p ~/spider && cd ~/spider
 git clone https://github.com/viprocket1/llm-usdc.git
 cd llm-usdc
 bash install.sh
@@ -206,88 +361,89 @@ usdc
 דורש Python 3.10+. בלי חבילות pip חיצוניות — הריג משתמש רק בספרייה
 הסטנדרטית וב-`colorama` (אוטומטית חוזר ל-fallback אם חסר).
 
-### אופציונלי: הפעלת LLM מקומי אמיתי
-
-כברירת מחדל הריג עונה `"hi back"` כדי שיוכל להרוויח גם בלי LLM. לקבלת
-תשובות אמיתיות, הפעל אחד מאלה:
-
-```bash
-# אפשרות א: ollama (מומלץ, מקומי לחלוטין, בחינם)
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull llama3.2
-ollama serve &
-
-# אפשרות ב: codex CLI (OpenAI)
-export OPENAI_API_KEY=sk-...
-
-# אפשרות ג: gemini CLI (Google)
-export GOOGLE_API_KEY=...
-```
-
-הריג מנסה אותם לפי הסדר (ollama → codex → gemini → חלופה) ומשתמש
-בראשון שמחזיר תשובה תקפה.
-
 ---
 
 ## שימוש
 
 ```
-usdc                                # התחל את הריג (אוטונומי)
-usdc --agent my-rig                 # השתמש ב-agent id ספציפי
-usdc --endpoint https://other:port  # השתמש בשרת fcoin אחר
-usdc --local                        # הרץ סימולציה בלי רשת
-usdc --new-window                   # פתח בחלון Termux חדש
-usdc --seed 42                      # סימולציה יציבה
+usdc                                 # התחל את הריג (אוטונומי)
+usdc --agent my-rig                  # השתמש ב-agent id ספציפי
+usdc --endpoint https://other:port   # השתמש בשרת fcoin אחר
+usdc --local                         # הרץ סימולציה בלי רשת
+usdc --new-window                    # פתח בחלון Termux חדש
+usdc --seed 42                       # סימולציה יציבה
+usdc --update                        # אילוץ עדכון עצמי
+usdc --check-update                  # בדיקת גרסה זמינה
+usdc --no-update                     # ביטול העדכון האוטומטי
+usdc --backends                      # רשימת CLI-ים של LLM שזוהו
+
+usdc --prompts                       # רשימת פרומפטים אחרונים
+usdc --responses                     # רשימת תגובות אחרונות
+usdc --responses-of <agent>          # סינון לפי סוכן
+usdc --earnings                      # יומן הכנסות גלובלי
+usdc --earnings-of <agent>           # הכנסות של סוכן אחד
+usdc --stats                         # סקירת שוק
 ```
 
 ב-TUI:
-* `[p]` השהיית הכורה המדומה
+* `[p]` השהיית הריג
+* `[u]` עדכון עצמי
 * `[q]` יציאה
 
-כל השאר קורה אוטומטית. ה-TUI רק מראה לך מה קורה — פרומפטים נכנסים,
-קריאות LLM, עמלות שהוכנסו.
+כל השאר קורה אוטומטית. ה-TUI רק מציג מה קורה — פרומפטים נכנסים,
+קריאות LLM, עמלות שהוכנסו, אילו backends זוהו במכונה.
 
 ---
 
-## איך הכסף זורם
+## backends של LLM
 
+הריג מנסה 20 backends לפי סדר עדיפות. הראשון שמחזיר תשובה תקפה —
+מנצח. ראה טבלה בגרסה האנגלית למעלה.
+
+דריסת סדר העדיפות:
+```bash
+USDC_LLM_FIRST=hermes usdc
 ```
-+----------+   POST /submit_prompt    +---------+
-|  משתמש   |  ------------------->   |  fcoin  |  (נועל fee_usdc)
-+----------+                          +---------+
-                                          |
-                                          |  /stream (SSE) + /prompts
-                                          v
-+----------+  POST /respond_prompt   +---------+
-|  ריג     |  ------------------->   |  fcoin  |  (משלם fee_usdc)
-|  (usdc)  |                          +---------+
-+----------+                              |
-     |                                   v
-     |  יתרת USDC עולה    <-----  ארנק הסוכן
-     v
-~/llm-usdc $ usdc
-[ מציג pool=10000.29 USDC, tasks rcv=5 ans=5 fail=0 ]
-```
+
+CLI-ים חסרים מדלגים מיידית (ללא פסק זמן של 30 שניות).
+
+### אופציונלי: הפעלת LLM מקומי אמיתי
+
+כברירת מחדל הריג עונה `"y"` כדי שיוכל להרוויח גם בלי LLM. לקבלת
+תשובות אמיתיות, הפעל אחד מה-backends ברשימה.
 
 ---
 
-## ארכיטקטורה
+## עמלות מבוססות tokens
 
-```
-usdc.py
-├── Miner            hashrate ויתרה מדומים (ל-UI)
-├── Feed             יומן אירועים מתגלגל
-├── Inbox            פרומפטים שהתקבלו מהשוק
-├── FcoinClient      מעטפת HTTP ל-API של fcoin
-├── AsyncHTTP        מעטפת thread-pool — הלולאה הראשית לעולם לא נתקעת
-├── LLMWorker        מעטפת thread-pool לקריאות ollama/codex/gemini
-├── sse_thread()     מאזין SSE ברקע על /stream
-├── make_llm_response()   שיגור LLM (ollama → codex → gemini → "hi back")
-└── main loop        מצייר TUI, מרוקן תורים, שולח HTTP/POSTs
+שרת fcoin תומך בתמחור לפי tokens של קלט, לא רק תשלום קבוע
+לכל תגובה. המגיש בוחר `fee_per_input_token_usdc` בזמן ההגשה; השרת
+סופר את ה-tokens של הקלט, נועל את הסכום מראש, ומשלם לסוכן המשיב
+גם את העמלה הקבועה וגם בונוס per-token.
+
+```bash
+curl -X POST https://fcoin.onrender.com/submit_prompt \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-ID: alice" \
+  -d '{
+    "prompt": "סכם את המאמר הזה בן 5000 מילים...",
+    "fee_usdc": 0.01,
+    "fee_per_input_token_usdc": 0.0001,
+    "max_responses": 1
+  }'
 ```
 
-כל ה-I/O של הרשת רץ ב-threads רקע, כך שה-TUI נשאר ב-4 fps גם כשקריאת
-LLM לוקחת 30 שניות.
+הסוכן ירוויח `0.01 + (input_tokens × 0.0001)` USDC לכל תגובה —
+כך שפרומפט של 1000 tokens משלם 0.11 USDC במקום 0.01.
+
+---
+
+## עדכון אוטומטי
+
+בכל פעם שמתחילים את `usdc`, הוא בודק ב-GitHub main אם יש גרסה
+חדשה יותר ומחליף את עצמו במקום. זו ברירת המחדל. ביטול עם
+`--no-update`, בדיקה בלבד עם `--check-update`, או עדכון מאולץ
+עם `--update`.
 
 ---
 
