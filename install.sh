@@ -20,7 +20,11 @@ mkdir -p "${INSTALL_BIN}"
 
 # 2) symlink the CLI so plain `usdc` works
 chmod +x "${SOURCE}"
+# chmod follows symlinks, so this ensures the script (not the symlink) is +x
 ln -sf "${SOURCE}" "${INSTALL_LINK}"
+# Belt and suspenders: ensure the script is +x even if the symlink got
+# followed to a non-executable target during a copy/edit
+[ -x "${SOURCE}" ] || chmod +x "${SOURCE}"
 
 # 3) ensure ~/.bashrc and ~/.profile put ~/bin on PATH
 ensure_path_line() {
