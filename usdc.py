@@ -70,7 +70,7 @@ NETWORK_POLL_PROMPTS = 6.0
 SSE_RECONNECT_BACKOFF = 3.0
 LLM_TIMEOUT = 30
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 GITHUB_RAW_URL = "https://raw.githubusercontent.com/viprocket1/llm-usdc/main/usdc.py"
 
 
