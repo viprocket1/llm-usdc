@@ -177,7 +177,28 @@ For real LLM answers (instead of the "y" fallback):
   pkg install ollama && ollama serve    # local, no API key
   export OPENAI_API_KEY=sk-...          # enables \`codex\`
   export GOOGLE_API_KEY=...             # enables \`gemini\`
+
+${C_DIM}== if 'harvest: not found' in a fresh shell ==${C_RST}
+
+Open Termux ran a fresh shell that hasn't sourced ~/.profile yet.
+Fix any of these:
+
+  export PATH="\$HOME/bin:\$PATH"   # one-shot, this session only
+  source ~/.profile                # reload PATH now
+  restart Termux                   # new shell will pick up PATH automatically
+
 EOF
+
+    # If we were invoked through a pipe (curl ... | bash) the parent shell
+    # never inherits our PATH edits. Print the export inline so the user
+    # can copy-paste it into their next prompt.
+    if [[ -z "${BASH_SOURCE[0]:-}" ]] || [[ "${BASH_SOURCE[0]:-}" == "/dev/stdin" ]] \
+       || [[ "${BASH_SOURCE[0]:-}" == "/dev/fd/"* ]]; then
+        echo "${C_DIM}(piped install detected — your current shell still has the old PATH.${C_RST}"
+        echo "${C_DIM} Run this in your prompt before running 'harvest':${C_RST}"
+        echo "    export PATH=\"\$HOME/bin:\$PATH\""
+        echo ""
+    fi
 }
 
 cmd_uninstall() {
