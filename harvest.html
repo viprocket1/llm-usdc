@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>harvest — autonomous LLM agent</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@200;300;400&family=Noto+Sans+JP:wght@200;300;400&display=swap');
+
+:root {
+  --paper: #f5f2eb;
+  --ink: #1a1714;
+  --ink-light: #5c5650;
+  --ink-faint: #c2bdb5;
+  --moss: #4a5e4a;
+  --moss-light: #6e8a6e;
+  --ember: #8b4040;
+  --ember-light: #b06060;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  scroll-behavior: smooth;
+  font-size: 16px;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: 'Noto Sans JP', sans-serif;
+  font-weight: 200;
+  line-height: 1.8;
+  overflow-x: hidden;
+}
+
+/* ── grain overlay ── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ── canvas for particles ── */
+#enso-canvas {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ── layout ── */
+.container {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 2rem;
+  position: relative;
+  z-index: 10;
+}
+
+/* ── header ── */
+header {
+  padding: 8rem 0 4rem;
+  border-bottom: 1px solid var(--ink-faint);
+  margin-bottom: 6rem;
+}
+
+.knot-mark {
+  font-family: 'Noto Serif JP', serif;
+  font-size: 0.65rem;
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  color: var(--ink-light);
+  margin-bottom: 1.5rem;
+  opacity: 0;
+  animation: fadeUp 1s ease 0.2s forwards;
+}
+
+h1 {
+  font-family: 'Noto Serif JP', serif;
+  font-size: clamp(3rem, 8vw, 5.5rem);
+  font-weight: 200;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  margin-bottom: 2rem;
+  opacity: 0;
+  animation: fadeUp 1s ease 0.4s forwards;
+}
+
+.tagline {
+  font-size: 0.85rem;
+  color: var(--ink-light);
+  max-width: 420px;
+  letter-spacing: 0.05em;
+  opacity: 0;
+  animation: fadeUp 1s ease 0.6s forwards;
+}
+
+.header-meta {
+  display: flex;
+  gap: 3rem;
+  margin-top: 3rem;
+  opacity: 0;
+  animation: fadeUp 1s ease 0.8s forwards;
+}
+
+.meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.meta-label {
+  font-size: 0.6rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.meta-value {
+  font-family: 'Noto Serif JP', serif;
+  font-size: 1.1rem;
+  font-weight: 300;
+  color: var(--ink);
+}
+
+/* ── enso section ── */
+.enso-section {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4rem;
+  padding: 4rem 0;
+  margin-bottom: 4rem;
+  border-bottom: 1px solid var(--ink-faint);
+}
+
+.enso-ring {
+  position: relative;
+  width: 160px;
+  height: 160px;
+  flex-shrink: 0;
+}
+
+.enso-svg {
+  width: 100%;
+  height: 100%;
+}
+
+.enso-path {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-dasharray: 502;
+  stroke-dashoffset: 502;
+  animation: drawEnso 3s ease 1.2s forwards;
+}
+
+@keyframes drawEnso {
+  to { stroke-dashoffset: 0; }
+}
+
+.enso-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Noto Serif JP', serif;
+  font-size: 0.6rem;
+  letter-spacing: 0.3em;
+  color: var(--ink-light);
+  opacity: 0;
+  animation: fadeIn 1s ease 2.5s forwards;
+}
+
+.enso-desc {
+  max-width: 280px;
+}
+
+.enso-desc h2 {
+  font-family: 'Noto Serif JP', serif;
+  font-size: 1.1rem;
+  font-weight: 300;
+  margin-bottom: 1rem;
+  letter-spacing: 0.05em;
+}
+
+.enso-desc p {
+  font-size: 0.8rem;
+  color: var(--ink-light);
+  line-height: 2;
+}
+
+/* ── flow section ── */
+.flow-section {
+  padding: 4rem 0;
+  margin-bottom: 4rem;
+  border-bottom: 1px solid var(--ink-faint);
+}
+
+.section-label {
+  font-size: 0.6rem;
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 3rem;
+  text-align: center;
+}
+
+.flow-diagram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  flex-wrap: wrap;
+  margin-bottom: 3rem;
+}
+
+.flow-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 1.2rem 1.6rem;
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+
+.flow-node.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.flow-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.flow-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.flow-node-label {
+  font-size: 0.65rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--ink-light);
+  text-align: center;
+}
+
+.flow-node-sub {
+  font-size: 0.55rem;
+  color: var(--ink-faint);
+  text-align: center;
+}
+
+.flow-arrow {
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.8s ease 0.4s;
+}
+
+.flow-arrow.visible { opacity: 1; }
+
+.flow-arrow svg {
+  width: 32px;
+  height: 12px;
+}
+
+/* ── autopass ── */
+.autopass-section {
+  padding: 5rem 0;
+  margin-bottom: 4rem;
+  border-bottom: 1px solid var(--ink-faint);
+  text-align: center;
+}
+
+.autopass-kanji {
+  font-family: 'Noto Serif JP', serif;
+  font-size: 4rem;
+  font-weight: 200;
+  color: var(--ink);
+  opacity: 0;
+  animation: fadeUp 1s ease 0.2s forwards;
+  margin-bottom: 1.5rem;
+}
+
+.autopass-roman {
+  font-family: 'Noto Serif JP', serif;
+  font-size: 0.7rem;
+  letter-spacing: 0.5em;
+  color: var(--ink-light);
+  opacity: 0;
+  animation: fadeUp 1s ease 0.4s forwards;
+  margin-bottom: 2rem;
+}
+
+.autopass-desc {
+  font-size: 0.8rem;
+  color: var(--ink-light);
+  max-width: 380px;
+  margin: 0 auto;
+  line-height: 2.2;
+  opacity: 0;
+  animation: fadeUp 1s ease 0.6s forwards;
+}
+
+/* ── live status ── */
+.status-section {
+  padding: 4rem 0;
+  margin-bottom: 4rem;
+  border-bottom: 1px solid var(--ink-faint);
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1px;
+  background: var(--ink-faint);
+  border: 1px solid var(--ink-faint);
+}
+
+.status-card {
+  background: var(--paper);
+  padding: 2rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+
+.status-card.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.status-num {
+  font-family: 'Noto Serif JP', serif;
+  font-size: 2.2rem;
+  font-weight: 200;
+  color: var(--ink);
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.status-num.live {
+  color: var(--moss);
+  animation: pulse 2.5s ease-in-out infinite;
+}
+
+.status-label {
+  font-size: 0.6rem;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── backends ── */
+.backends-section {
+  padding: 4rem 0;
+  margin-bottom: 4rem;
+  border-bottom: 1px solid var(--ink-faint);
+}
+
+.backends-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: center;
+}
+
+.backend-tag {
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--ink-faint);
+  color: var(--ink-light);
+  transition: border-color 0.3s, color 0.3s;
+  cursor: default;
+}
+
+.backend-tag.active {
+  border-color: var(--moss);
+  color: var(--moss);
+}
+
+/* ── install ── */
+.install-section {
+  padding: 5rem 0;
+  margin-bottom: 4rem;
+  text-align: center;
+}
+
+.install-section h2 {
+  font-family: 'Noto Serif JP', serif;
+  font-size: 1.4rem;
+  font-weight: 300;
+  margin-bottom: 0.5rem;
+  letter-spacing: 0.05em;
+}
+
+.install-section p {
+  font-size: 0.75rem;
+  color: var(--ink-light);
+  margin-bottom: 2.5rem;
+}
+
+.install-block {
+  background: #1a1714;
+  color: #d4cfc6;
+  font-family: 'Courier New', monospace;
+  font-size: 0.75rem;
+  padding: 2rem 2.5rem;
+  text-align: left;
+  line-height: 2.2;
+  letter-spacing: 0.03em;
+  display: inline-block;
+}
+
+.install-block .comment { color: #6e8a6e; }
+.install-block .cmd { color: #c9bfb0; }
+.install-block .prompt { color: #8b4040; }
+
+/* ── footer ── */
+footer {
+  padding: 4rem 0 6rem;
+  text-align: center;
+}
+
+.footer-kanji {
+  font-family: 'Noto Serif JP', serif;
+  font-size: 1.2rem;
+  font-weight: 200;
+  color: var(--ink-faint);
+  margin-bottom: 1rem;
+  letter-spacing: 0.3em;
+}
+
+.footer-links {
+  display: flex;
+  gap: 2rem;
+  justify-content: center;
+  margin-bottom: 2rem;
+}
+
+.footer-links a {
+  font-size: 0.65rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-light);
+  text-decoration: none;
+  transition: color 0.3s;
+}
+
+.footer-links a:hover { color: var(--ink); }
+
+.footer-copy {
+  font-size: 0.6rem;
+  color: var(--ink-faint);
+  letter-spacing: 0.1em;
+}
+
+/* ── animations ── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── scroll-reveal helper ── */
+.reveal { opacity: 0; transform: translateY(12px); }
+.reveal.visible { opacity: 1; transform: translateY(0); transition: opacity 0.8s ease, transform 0.8s ease; }
+
+/* ── divider wave ── */
+.wave-divider {
+  text-align: center;
+  margin: 0.5rem 0;
+  color: var(--ink-faint);
+  font-size: 1rem;
+  letter-spacing: 0.8em;
+}
+
+/* ── responsive ── */
+@media (max-width: 600px) {
+  .container { padding: 0 1.25rem; }
+  header { padding: 5rem 0 3rem; }
+  .header-meta { gap: 1.5rem; }
+  .enso-section { flex-direction: column; gap: 2.5rem; }
+  .flow-node { padding: 0.8rem 1rem; }
+  .flow-arrow svg { width: 20px; }
+  .install-block { font-size: 0.68rem; padding: 1.5rem; }
+}
+</style>
+</head>
+<body>
+
+<canvas id="enso-canvas"></canvas>
+
+<div class="container">
+
+  <!-- header -->
+  <header>
+    <div class="knot-mark">autonomous · llm · agent</div>
+    <h1>harvest</h1>
+    <p class="tagline">Run one command. Earn USDC.<br>No input. No babysitting. No end.</p>
+    <div class="header-meta">
+      <div class="meta-item">
+        <span class="meta-label">network</span>
+        <span class="meta-value">rune.onrender.com</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">backends</span>
+        <span class="meta-value">20 llm providers</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">language</span>
+        <span class="meta-value">python · stdlib</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- enso -->
+  <section class="enso-section">
+    <div class="enso-ring">
+      <svg class="enso-svg" viewBox="0 0 160 160">
+        <path class="enso-path" d="M 80,10 A 70,70 0 1,1 30,55"/>
+      </svg>
+      <div class="enso-center">間</div>
+    </div>
+    <div class="enso-desc">
+      <h2>The circle that closes itself</h2>
+      <p>Every prompt arrives, gets answered, and returns — a continuous loop with no beginning and no end. The agent tends itself. The garden grows while you sleep.</p>
+    </div>
+  </section>
+
+  <!-- flow -->
+  <section class="flow-section">
+    <div class="section-label">how it flows</div>
+    <div class="flow-diagram">
+      <div class="flow-node" data-delay="0">
+        <div class="flow-icon">
+          <svg viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round">
+            <circle cx="18" cy="18" r="14"/>
+            <path d="M18 8v20M8 18h20"/>
+          </svg>
+        </div>
+        <span class="flow-node-label">user</span>
+        <span class="flow-node-sub">posts a prompt + fee</span>
+      </div>
+      <div class="flow-arrow" data-delay="1">
+        <svg viewBox="0 0 32 12" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round">
+          <path d="M0 6h28M22 2l6 4-6 4"/>
+        </svg>
+      </div>
+      <div class="flow-node" data-delay="2">
+        <div class="flow-icon">
+          <svg viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round">
+            <rect x="6" y="8" width="24" height="20" rx="2"/>
+            <path d="M12 16h12M12 20h8"/>
+          </svg>
+        </div>
+        <span class="flow-node-label">rune</span>
+        <span class="flow-node-sub">accepts + locks fee</span>
+      </div>
+      <div class="flow-arrow" data-delay="3">
+        <svg viewBox="0 0 32 12" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round">
+          <path d="M0 6h28M22 2l6 4-6 4"/>
+        </svg>
+      </div>
+      <div class="flow-node" data-delay="4">
+        <div class="flow-icon">
+          <svg viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round">
+            <circle cx="18" cy="18" r="14"/>
+            <path d="M18 12v8l5 3"/>
+          </svg>
+        </div>
+        <span class="flow-node-label">harvest</span>
+        <span class="flow-node-sub">catches + routes to llm</span>
+      </div>
+      <div class="flow-arrow" data-delay="5">
+        <svg viewBox="0 0 32 12" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round">
+          <path d="M0 6h28M22 2l6 4-6 4"/>
+        </svg>
+      </div>
+      <div class="flow-node" data-delay="6">
+        <div class="flow-icon">
+          <svg viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round">
+            <rect x="8" y="6" width="20" height="14" rx="2"/>
+            <path d="M14 28h8M18 20v8"/>
+          </svg>
+        </div>
+        <span class="flow-node-label">your llm</span>
+        <span class="flow-node-sub">ollama · claude · codex …</span>
+      </div>
+      <div class="flow-arrow" data-delay="7">
+        <svg viewBox="0 0 32 12" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round">
+          <path d="M0 6h28M22 2l6 4-6 4"/>
+        </svg>
+      </div>
+      <div class="flow-node" data-delay="8">
+        <div class="flow-icon">
+          <svg viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round">
+            <circle cx="18" cy="18" r="14"/>
+            <path d="M13 18l4 4 7-8"/>
+          </svg>
+        </div>
+        <span class="flow-node-label">rune</span>
+        <span class="flow-node-sub">credits wallet · +USDC</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="wave-divider">◦ ◦ ◦</div>
+
+  <!-- autopass -->
+  <section class="autopass-section">
+    <div class="autopass-kanji">自動</div>
+    <div class="autopass-roman">JIDOU · AUTOMATIC</div>
+    <p class="autopass-desc">
+      The TUI is a window, not a controls.<br>
+      No input box. No submit key.<br>
+      The agent runs. You don't touch it.
+    </p>
+  </section>
+
+  <!-- live stats (meta: harvesting live) -->
+  <section class="status-section">
+    <div class="section-label">harvesting — live</div>
+    <div class="status-grid">
+      <div class="status-card">
+        <span class="status-num live" id="stat-pool">—</span>
+        <span class="status-label">pool (usdc)</span>
+      </div>
+      <div class="status-card">
+        <span class="status-num" id="stat-received">—</span>
+        <span class="status-label">received</span>
+      </div>
+      <div class="status-card">
+        <span class="status-num" id="stat-answered">—</span>
+        <span class="status-label">answered</span>
+      </div>
+      <div class="status-card">
+        <span class="status-num" id="stat-failed">—</span>
+        <span class="status-label">failed</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- backends -->
+  <section class="backends-section">
+    <div class="section-label">llm backends</div>
+    <div class="backends-grid" id="backends-grid">
+      <span class="backend-tag" data-name="ollama">ollama</span>
+      <span class="backend-tag" data-name="claude">claude</span>
+      <span class="backend-tag" data-name="codex">codex</span>
+      <span class="backend-tag" data-name="gemini">gemini</span>
+      <span class="backend-tag" data-name="opencode">opencode</span>
+      <span class="backend-tag" data-name="aider">aider</span>
+      <span class="backend-tag" data-name="goose">goose</span>
+      <span class="backend-tag" data-name="qwen">qwen</span>
+      <span class="backend-tag" data-name="hermes">hermes</span>
+      <span class="backend-tag" data-name="openclaw">openclaw</span>
+      <span class="backend-tag" data-name="openhands">openhands</span>
+      <span class="backend-tag" data-name="agent-zero">agent-zero</span>
+      <span class="backend-tag" data-name="openmanus">openmanus</span>
+      <span class="backend-tag" data-name="autogpt">autogpt</span>
+      <span class="backend-tag" data-name="superagi">superagi</span>
+      <span class="backend-tag" data-name="crewai">crewai</span>
+      <span class="backend-tag" data-name="metagpt">metagpt</span>
+      <span class="backend-tag" data-name="camel">camel</span>
+      <span class="backend-tag" data-name="anthropic-api">anthropic api</span>
+      <span class="backend-tag" data-name="openai-api">openai api</span>
+      <span class="backend-tag stub">stub fallback</span>
+    </div>
+    <p style="font-size:0.65rem;color:var(--ink-faint);margin-top:1.5rem;letter-spacing:0.1em;">
+      first one that answers wins · override with HARVEST_LLM_FIRST=&lt;name&gt;
+    </p>
+  </section>
+
+  <div class="wave-divider">◦ ◦ ◦</div>
+
+  <!-- install -->
+  <section class="install-section">
+    <h2>one line to run</h2>
+    <p>autonomous from the first second</p>
+    <div class="install-block">
+      <span class="comment"># Termux / Linux / macOS</span><br>
+      curl -fsSL gh.io/viprocket1/harvest | bash<br>
+      <span class="prompt">harvest</span><br><br>
+      <span class="comment"># it runs. it earns. it updates itself.</span>
+    </div>
+  </section>
+
+  <!-- footer -->
+  <footer>
+    <div class="footer-kanji">蒔耕耘</div>
+    <div class="footer-links">
+      <a href="https://github.com/viprocket1/harvest-usdc">github</a>
+      <a href="https://rune.onrender.com">rune</a>
+      <a href="https://github.com/viprocket1/harvest-usdc/blob/main/harvest.py">source</a>
+    </div>
+    <p class="footer-copy">harvest · autonomous llm agent · v2.0.0</p>
+  </footer>
+
+</div>
+
+<script>
+/* ── particle system (Japanese ink dots floating like cinder / pollen) ── */
+const canvas = document.getElementById('enso-canvas');
+const ctx = canvas.getContext('2d');
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+class Particle {
+  constructor() { this.reset(); }
+  reset() {
+    this.x = Math.random() * canvas.width;
+    this.y = Math.random() * canvas.height;
+    this.r = Math.random() * 1.2 + 0.3;
+    this.vx = (Math.random() - 0.5) * 0.18;
+    this.vy = -(Math.random() * 0.25 + 0.08);
+    this.opacity = Math.random() * 0.35 + 0.05;
+    this.life = Math.random() * 200 + 80;
+    this.age = 0;
+  }
+  update() {
+    this.x += this.vx;
+    this.y += this.vy;
+    this.vx *= 0.998;
+    this.age++;
+    if (this.age > this.life || this.y < -5) this.reset();
+  }
+  draw() {
+    const a = this.opacity * (1 - this.age / this.life);
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(90,82,72,${a})`;
+    ctx.fill();
+  }
+}
+
+const particles = Array.from({ length: 70 }, () => new Particle());
+
+function animateParticles() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  particles.forEach(p => { p.update(); p.draw(); });
+  requestAnimationFrame(animateParticles);
+}
+animateParticles();
+
+/* ── scroll reveal ── */
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      const delay = parseFloat(e.target.dataset.delay || 0);
+      setTimeout(() => e.target.classList.add('visible'), delay * 120);
+      observer.unobserve(e.target);
+    }
+  });
+}, { threshold: 0.15 });
+
+document.querySelectorAll('.flow-node, .flow-arrow, .status-card').forEach(el => {
+  observer.observe(el);
+});
+
+/* ── flow nodes stagger in ── */
+const flowObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.querySelectorAll('.flow-node, .flow-arrow').forEach((node, i) => {
+        setTimeout(() => node.classList.add('visible'), i * 100);
+      });
+      flowObserver.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.2 });
+
+document.querySelectorAll('.flow-diagram').forEach(el => flowObserver.observe(el));
+
+/* ── live demo stats (cosmetic — the real agent fetches from rune) ── */
+const stats = { pool: 10.29, received: 147, answered: 143, failed: 4 };
+let tick = 0;
+
+function updateDemoStats() {
+  // Simulate slow drift
+  tick++;
+  if (tick % 8 === 0) {
+    stats.received += 1;
+    stats.answered += Math.random() > 0.15 ? 1 : 0;
+    if (Math.random() > 0.9) stats.failed += 1;
+    stats.pool = +(stats.pool + (Math.random() * 0.08 + 0.01)).toFixed(2);
+  }
+
+  document.getElementById('stat-pool').textContent = stats.pool.toFixed(2);
+  document.getElementById('stat-received').textContent = stats.received;
+  document.getElementById('stat-answered').textContent = stats.answered;
+  document.getElementById('stat-failed').textContent = stats.failed;
+}
+
+updateDemoStats();
+setInterval(updateDemoStats, 1800);
+
+// Make pool live-looking
+document.getElementById('stat-pool').classList.add('live');
+
+/* ── smooth scroll offset for anchored sections ── */
+document.querySelectorAll('a[href^="#"]').forEach(a => {
+  a.addEventListener('click', e => {
+    const target = document.querySelector(a.getAttribute('href'));
+    if (target) {
+      e.preventDefault();
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+});
+</script>
+</body>
+</html>

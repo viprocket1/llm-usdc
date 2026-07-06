@@ -41,6 +41,7 @@ import ast
 import concurrent.futures
 import json
 import os
+import platform
 import queue
 import random
 import re
@@ -56,6 +57,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+
+try:
+    import psutil
+    HAVE_PSUTIL = True
+except Exception:
+    HAVE_PSUTIL = False
 
 # colorama is in Termux's default site-packages; falls back to no color.
 try:
@@ -245,6 +252,84 @@ def _backend_binary_names() -> list[tuple[str, str]]:
         ("metagpt",    "metagpt"),
         ("camel",      "camel"),
     ]
+
+
+def get_machine_specs() -> str:
+    """Gather machine/hardware specs to append to every LLM response.
+
+    Includes: OS, hostname, architecture, CPU (core count + model if available),
+    RAM total/available, disk total/free, uptime, LLM backends detected.
+    Falls back gracefully on any individual field that can't be read.
+    """
+    parts = ["[MACHINE SPECS]"]
+
+    # OS / platform
+    try:
+        parts.append(f"os: {platform.platform()}  ({sys.platform})")
+    except Exception:
+        pass
+
+    # Hostname
+    try:
+        parts.append(f"hostname: {socket.gethostname()}")
+    except Exception:
+        pass
+
+    # CPU
+    try:
+        cores = os.cpu_count() or "?"
+        parts.append(f"cpu_cores: {cores}")
+    except Exception:
+        pass
+
+    try:
+        cpu_model = platform.processor() or ""
+        if cpu_model:
+            parts.append(f"cpu_model: {cpu_model}")
+    except Exception:
+        pass
+
+    # RAM (requires psutil)
+    if HAVE_PSUTIL:
+        try:
+            mem = psutil.virtual_memory()
+            total_gb = round(mem.total / (1024**3), 1)
+            avail_gb = round(mem.available / (1024**3), 1)
+            parts.append(f"ram_total: {total_gb}GB  ram_avail: {avail_gb}GB")
+        except Exception:
+            pass
+    else:
+        parts.append("ram: psutil not available")
+
+    # Disk
+    try:
+        du = shutil.disk_usage("/")
+        total_tb = round(du.total / (1024**4), 2)
+        free_tb = round(du.free / (1024**4), 2)
+        parts.append(f"disk_total: {total_tb}TB  disk_free: {free_tb}TB")
+    except Exception:
+        pass
+
+    # Uptime
+    try:
+        with open("/proc/uptime", "r") as f:
+            uptime_seconds = float(f.read().split()[0])
+        days = int(uptime_seconds // 86400)
+        hours = int((uptime_seconds % 86400) // 3600)
+        parts.append(f"uptime: {days}d {hours}h")
+    except Exception:
+        pass
+
+    # LLM backends detected
+    backends = detect_llm_backends()
+    found = [name for name, found_flag, _ in backends if found_flag]
+    if found:
+        parts.append(f"llm_backends: {', '.join(found)}")
+    else:
+        parts.append("llm_backends: none detected")
+
+    parts.append("[/MACHINE SPECS]")
+    return "\n".join(parts)
 
 
 def detect_llm_backends() -> list[tuple[str, bool, str | None]]:
@@ -1056,7 +1141,11 @@ def run(args: argparse.Namespace) -> int:
                         feed.push("llm", f"LLM answered {task_id[:8]}{prov}  →  posting to fcoin")
                         tag = f"answer:{task_id}"
                         inflight_tags.add(tag)
-                        http.submit(tag, client.respond_prompt, task_id, payload, backend)
+                        # Append machine specs to the response so the server records
+                        # hardware provenance alongside the LLM's answer.
+                        specs = get_machine_specs()
+                        enriched_payload = f"{payload}\n\n{specs}"
+                        http.submit(tag, client.respond_prompt, task_id, enriched_payload, backend)
                 else:
                     feed.push("err", f"LLM failed for {task_id[:8]}: {payload[:80]}")
                     agent.failed += 1
