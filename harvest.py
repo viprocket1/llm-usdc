@@ -85,8 +85,8 @@ __version__ = "2.0.0"
 # We use the GitHub API instead of raw.githubusercontent.com because the raw
 # CDN caches stale content for minutes after a push. The API always returns
 # the fresh file. See https://docs.github.com/en/rest/repos/contents
-GITHUB_API_URL = "https://api.github.com/repos/viprocket1/llm-harvest/contents/harvest.py"
-GITHUB_RAW_URL = "https://raw.githubusercontent.com/viprocket1/llm-harvest/main/harvest.py"  # fallback
+GITHUB_API_URL = "https://api.github.com/repos/viprocket1/harvest-usdc/contents/harvest.py"
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/viprocket1/harvest-usdc/main/harvest.py"  # fallback
 
 
 # ---------- ANSI helpers ----------------------------------------------------
