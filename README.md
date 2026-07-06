@@ -35,15 +35,15 @@ No manual input. No UI to babysit. No keys to copy. Drop it on an old phone and 
 ## 30-second start
 
 ```bash
-# Termux (Android)
-pkg update && pkg install python
-git clone https://github.com/viprocket1/harvest-usdc.git
-cd harvest-usdc && bash install.sh
+# one command — works on Termux, Linux, macOS, anywhere with curl
+curl -sSL https://raw.githubusercontent.com/viprocket1/harvest-usdc/main/install.sh | bash
 harvest
 ```
 
+The installer auto-detects your environment: clones the repo if `git` is available, otherwise fetches the files directly via the GitHub API, installs Python deps, links `~/bin/harvest`, and adds `~/bin` to your PATH. It is idempotent — re-running it just refreshes the install.
+
 ```bash
-# Linux / macOS
+# alternative: clone manually
 git clone https://github.com/viprocket1/harvest-usdc.git
 cd harvest-usdc && bash install.sh
 harvest
@@ -100,6 +100,35 @@ harvest --backends                      # show which LLM CLIs are detected
 ```
 
 The rig subscribes to `/stream` (SSE) for instant prompt delivery and polls `/prompts` as a fallback. Missing CLIs are fast-skipped — no 30-second timeouts.
+
+---
+
+## Lifecycle commands
+
+`install.sh` is also a full lifecycle manager. After installation, `harvest` doubles as the dispatcher for all of these:
+
+```bash
+harvest install             # re-link ~/bin/harvest, refresh env, print next steps
+harvest uninstall           # remove symlink + ~/.harvest.env + pid/log (keeps the repo)
+harvest update              # git pull + re-link + check for harvest.py self-update
+harvest status              # version, repo path, symlink, env, agent id, endpoint
+harvest doctor              # deps + endpoint reachability + symlink sanity
+harvest agent termux-rig-01 # pin a stable agent id (saved to ~/.harvest.env)
+harvest agent               # show current agent id
+harvest agent --clear       # remove the saved agent id (random per-launch again)
+harvest endpoint <url>      # override the default rune server (saved to ~/.harvest.env)
+harvest endpoint            # show current endpoint
+harvest endpoint --clear    # reset to default
+harvest deps                # (re)install Python deps from requirements.txt
+harvest backends            # list all LLM CLIs and which are detected on this machine
+harvest start               # launch the rig (foreground if tty, background w/ pid file otherwise)
+harvest stop                # kill any running harvest.py
+harvest restart             # stop + start
+harvest logs                # tail the detached-run log
+harvest help                # all subcommands
+```
+
+Re-running `curl ... | bash` is always safe — the installer is idempotent.
 
 ---
 
@@ -294,15 +323,15 @@ MIT.
 ## התקנה מהירה
 
 ```bash
-# Termux (אנדרואיד)
-pkg update && pkg install python
-git clone https://github.com/viprocket1/harvest-usdc.git
-cd harvest-usdc && bash install.sh
+# פקודה אחת — עובדת ב-Termux, לינוקס, macOS, בכל מקום עם curl
+curl -sSL https://raw.githubusercontent.com/viprocket1/harvest-usdc/main/install.sh | bash
 harvest
 ```
 
+המתקין מזהה את הסביבה לבד: אם `git` מותקן הוא משכפל את ה-repo, אחרת הוא מוריד את הקבצים ישירות דרך GitHub API, מתקין את תלויות ה-Python, יוצר symlink ב-`~/bin/harvest`, ומוסיף את `~/bin` ל-PATH. ההתקנה idempotent — אפשר להריץ שוב בלי לשבור כלום.
+
 ```bash
-# לינוקס / macOS
+# חלופה: שכפול ידני
 git clone https://github.com/viprocket1/harvest-usdc.git
 cd harvest-usdc && bash install.sh
 harvest
@@ -332,6 +361,33 @@ harvest --backends                      # מציג אילו CLI-ים של LLM נ
 
 ה-TUI הוא רק לניטור — אין תיבת קלט, אין מקש שליחה, אין זרימת מענה ידנית.
 הסוכן רץ ללא השגחה.
+
+## פקודות ניהול
+
+`install.sh` הוא גם מנהל מחזור חיים מלא. אחרי ההתקנה, `harvest` משמש גם כמתחבר לכל אלה:
+
+```bash
+harvest install             # רענון ה-symlink וקובץ הסביבה, הדפסת שלבים הבאים
+harvest uninstall           # הסרת ה-symlink + ~/.harvest.env + pid/log (ה-repo נשמר)
+harvest update              # git pull + רענון ה-symlink + בדיקת עדכון ל-harvest.py
+harvest status              # גרסה, נתיב repo, symlink, סביבה, agent id, endpoint
+harvest doctor              # תלויות + הגעה ל-endpoint + תקינות ה-symlink
+harvest agent termux-rig-01 # נעיצת agent id יציב (נשמר ב-~/.harvest.env)
+harvest agent               # הצגת ה-agent id הנוכחי
+harvest agent --clear       # הסרת ה-agent id השמור (חזרה ל-id אקראי)
+harvest endpoint <url>      # שינוי שרת ברירת המחדל של rune (נשמר ב-~/.harvest.env)
+harvest endpoint            # הצגת ה-endpoint הנוכחי
+harvest endpoint --clear    # איפוס לברירת המחדל
+harvest deps                # התקנה מחדש של תלויות Python מ-requirements.txt
+harvest backends            # רשימת כל ה-CLI-ים של LLM ואילו מהם נמצאו
+harvest start               # הפעלת הריג (בחזית אם tty, ברקע עם pid file אחרת)
+harvest stop                # עצירת כל תהליך harvest.py רץ
+harvest restart             # עצירה + הפעלה
+harvest logs                # tail של יומן ההפעלה ברקע
+harvest help                # כל פקודות המשנה
+```
+
+הרצה חוזרת של `curl ... | bash` תמיד בטוחה — ההתקנה idempotent.
 
 ## עמלות מבוססות tokens
 
