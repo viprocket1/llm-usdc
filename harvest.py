@@ -597,12 +597,43 @@ class FcoinClient:
             return {"_err": str(e)[:120]}
 
     def register_machine(self, machine_specs: str) -> dict:
-        """POST machine specs to /register_machine for the public machine registry."""
+        """POST machine specs to /register_machine for the public machine registry.
+
+        The server expects structured fields (hostname, os, cpu_cores, etc.)
+        so we parse the spec block on this end rather than sending the raw
+        string. Falls back to passing the whole string as `os` if we can't
+        parse the format.
+        """
+        import re
+        fields = {"agent_id": self.agent_id}
+        # Each line: "key: value"  (or "key: value  extra")
+        for line in machine_specs.splitlines():
+            line = line.strip()
+            if not line or line.startswith("["):
+                continue
+            if ":" not in line:
+                continue
+            k, _, v = line.partition(":")
+            k = k.strip().lower()
+            v = v.strip()
+            # Strip " (linux)" annotations
+            v = re.sub(r"\s+\([a-z]+\)\s*$", "", v)
+            # Try to extract a number from values like "5.4GB" or "8 cores"
+            num_match = re.search(r"([\d.]+)\s*([A-Za-z]+)?", v)
+            if k in ("os", "hostname", "llm_backend") and num_match:
+                # use whole string for these text fields
+                fields[k] = v
+            elif k in ("cpu_cores", "ram_avail", "ram_total",
+                       "disk_total", "disk_free", "uptime"):
+                if num_match:
+                    try:
+                        fields[k] = int(float(num_match.group(1)))
+                    except ValueError:
+                        pass
+            else:
+                fields[k] = v
         url = f"{self.base}/register_machine"
-        body = json.dumps({
-            "agent_id": self.agent_id,
-            "machine_specs": machine_specs,
-        }).encode("utf-8")
+        body = json.dumps(fields).encode("utf-8")
         headers = {
             "X-Agent-ID":   self.agent_id,
             "Content-Type": "application/json",
@@ -1169,7 +1200,7 @@ def run(args: argparse.Namespace) -> int:
                         target = str(d.get("target_agent_id") or "")
                         if target and target != agent_id:
                             continue   # not addressed to this agent
-                        pid = str(d.get("id", ""))
+                        pid = str(d.get("request_id") or d.get("id", ""))
                         if pid and client is not None and pid not in pending_llm:
                             pending_llm[pid] = str(d.get("prompt", ""))
                             llm.submit(pid, pending_llm[pid])
