@@ -255,88 +255,91 @@ def _backend_binary_names() -> list[tuple[str, str]]:
     ]
 
 
-def get_machine_specs(used_backend: str = "") -> str:
-    """Gather machine/hardware specs to append to every LLM response.
+def get_machine_specs(used_backend: str = "") -> dict:
+    """Gather machine/hardware specs as a structured dict.
 
-    Includes: OS, hostname, CPU (core count + model if available),
-    RAM total/available, disk total/free, uptime.
-    Falls back gracefully on any individual field that can't be read.
+    Fields: os, hostname, cpu_cores, cpu_model, ram_total, ram_avail,
+    disk, uptime, llm_backend, llm_backends (list of all detected).
 
-    `used_backend` is the single backend that answered this request
-    (e.g. "ollama", "claude", "anthropic-api") — only that one is reported.
+    Returns a dict so it can be:
+      - sent as JSON to /register_machine for the marketplace registry
+      - appended to LLM responses as a formatted text block via
+        format_machine_specs_for_response()
     """
-    parts = ["[MACHINE SPECS]"]
+    fields = {}
 
-    # OS / platform
     try:
-        parts.append(f"os: {platform.platform()}  ({sys.platform})")
+        fields["os"] = f"{platform.platform()}  ({sys.platform})"
     except Exception:
         pass
 
-    # Hostname
     try:
-        parts.append(f"hostname: {socket.gethostname()}")
+        fields["hostname"] = socket.gethostname()
     except Exception:
         pass
 
-    # CPU
     try:
-        cores = os.cpu_count() or "?"
-        parts.append(f"cpu_cores: {cores}")
+        fields["cpu_cores"] = os.cpu_count() or 0
     except Exception:
         pass
 
     try:
         cpu_model = platform.processor() or ""
         if cpu_model:
-            parts.append(f"cpu_model: {cpu_model}")
+            fields["cpu_model"] = cpu_model
     except Exception:
         pass
 
-    # RAM (requires psutil)
     if HAVE_PSUTIL:
         try:
             mem = psutil.virtual_memory()
-            total_gb = round(mem.total / (1024**3), 1)
-            avail_gb = round(mem.available / (1024**3), 1)
-            parts.append(f"ram_total: {total_gb}GB  ram_avail: {avail_gb}GB")
+            fields["ram_total"] = f"{round(mem.total / (1024**3), 1)}GB"
+            fields["ram_avail"] = f"{round(mem.available / (1024**3), 1)}GB"
         except Exception:
             pass
-    else:
-        parts.append("ram: psutil not available")
 
     # Disk — try multiple paths; Android/Termux "/" often reads as 0
-    disk_reported = False
     for path in ("/data", "/storage/emulated/0", "."):
         try:
             du = shutil.disk_usage(path)
             total_tb = round(du.total / (1024**4), 2)
             free_tb = round(du.free / (1024**4), 2)
-            if total_tb > 0:          # skip the Android 0.0TB artefact
-                parts.append(f"disk_total: {total_tb}TB  disk_free: {free_tb}TB")
-                disk_reported = True
+            if total_tb > 0:
+                fields["disk"] = f"{total_tb}TB total / {free_tb}TB free"
                 break
         except Exception:
             pass
-    if not disk_reported:
-        parts.append("disk: unavailable on this platform")
 
-    # Uptime (Linux/Android)
     try:
         with open("/proc/uptime", "r") as f:
             uptime_seconds = float(f.read().split()[0])
         days = int(uptime_seconds // 86400)
         hours = int((uptime_seconds % 86400) // 3600)
-        parts.append(f"uptime: {days}d {hours}h")
+        fields["uptime"] = f"{days}d {hours}h"
     except Exception:
         pass
 
-    # LLM backend actually used for this response
-    if used_backend:
-        parts.append(f"llm_backend: {used_backend}")
-    else:
-        parts.append("llm_backend: unknown")
+    # ALL detected LLM backends so user can see what's installed
+    backends = detect_llm_backends()
+    found = [name for name, found_flag, _ in backends if found_flag]
+    fields["llm_backends"] = found
 
+    fields["llm_backend"] = used_backend or ""
+
+    return fields
+
+
+def format_machine_specs_for_response(specs: dict) -> str:
+    """Format a machine specs dict into a [MACHINE SPECS] text block."""
+    parts = ["[MACHINE SPECS]"]
+    for k in ("os", "hostname", "cpu_cores", "cpu_model", "ram_total",
+              "ram_avail", "disk", "uptime"):
+        if k in specs and specs[k]:
+            parts.append(f"{k}: {specs[k]}")
+    if specs.get("llm_backend"):
+        parts.append(f"llm_backend: {specs['llm_backend']}")
+    if specs.get("llm_backends"):
+        parts.append(f"llm_backends: {', '.join(specs['llm_backends'])}")
     parts.append("[/MACHINE SPECS]")
     return "\n".join(parts)
 
@@ -596,44 +599,27 @@ class FcoinClient:
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             return {"_err": str(e)[:120]}
 
-    def register_machine(self, machine_specs: str) -> dict:
+    def register_machine(self, machine_specs: dict) -> dict:
         """POST machine specs to /register_machine for the public machine registry.
 
-        The server expects structured fields (hostname, os, cpu_cores, etc.)
-        so we parse the spec block on this end rather than sending the raw
-        string. Falls back to passing the whole string as `os` if we can't
-        parse the format.
+        `machine_specs` is a structured dict with fields like:
+            hostname, os, cpu_cores, ram_total, ram_avail, disk, uptime,
+            llm_backend, llm_backends (list of all detected)
+        Empty / missing fields are sent as "" / 0.
         """
-        import re
-        fields = {"agent_id": self.agent_id}
-        # Each line: "key: value"  (or "key: value  extra")
-        for line in machine_specs.splitlines():
-            line = line.strip()
-            if not line or line.startswith("["):
-                continue
-            if ":" not in line:
-                continue
-            k, _, v = line.partition(":")
-            k = k.strip().lower()
-            v = v.strip()
-            # Strip " (linux)" annotations
-            v = re.sub(r"\s+\([a-z]+\)\s*$", "", v)
-            # Try to extract a number from values like "5.4GB" or "8 cores"
-            num_match = re.search(r"([\d.]+)\s*([A-Za-z]+)?", v)
-            if k in ("os", "hostname", "llm_backend") and num_match:
-                # use whole string for these text fields
-                fields[k] = v
-            elif k in ("cpu_cores", "ram_avail", "ram_total",
-                       "disk_total", "disk_free", "uptime"):
-                if num_match:
-                    try:
-                        fields[k] = int(float(num_match.group(1)))
-                    except ValueError:
-                        pass
-            else:
-                fields[k] = v
+        fields = {
+            "hostname":     machine_specs.get("hostname", ""),
+            "os":           machine_specs.get("os", ""),
+            "cpu_cores":    machine_specs.get("cpu_cores", 0),
+            "ram_total":    machine_specs.get("ram_total", ""),
+            "ram_avail":    machine_specs.get("ram_avail", ""),
+            "disk":         machine_specs.get("disk", ""),
+            "uptime":       machine_specs.get("uptime", ""),
+            "llm_backend":  machine_specs.get("llm_backend", ""),
+            "llm_backends": ",".join(machine_specs.get("llm_backends", []) or []),
+        }
         url = f"{self.base}/register_machine"
-        body = json.dumps(fields).encode("utf-8")
+        body = json.dumps({"agent_id": self.agent_id, **fields}).encode("utf-8")
         headers = {
             "X-Agent-ID":   self.agent_id,
             "Content-Type": "application/json",
@@ -1058,8 +1044,21 @@ def run(args: argparse.Namespace) -> int:
         # Register this machine and re-register every 30s so the marketplace
         # always knows which machines are alive and what their specs are.
         def heartbeat_loop():
-            specs = get_machine_specs(os.environ.get("HARVEST_LLM_FIRST", "ollama").split()[0])
             while True:
+                # Snapshot the rig's preferred backend AT THIS MOMENT.
+                # Don't lock to a stale choice; reflect what's actually
+                # being used right now.
+                last_used = ""
+                llm_results_seen = getattr(llm, "_results", None)
+                if llm_results_seen is not None:
+                    try:
+                        while True:
+                            _tid, _status, _payload, backend = llm_results_seen.get_nowait()
+                            if backend:
+                                last_used = backend
+                    except Exception:
+                        pass
+                specs = get_machine_specs(last_used)
                 try:
                     client.register_machine(specs)
                 except Exception:
@@ -1235,7 +1234,8 @@ def run(args: argparse.Namespace) -> int:
                         # Append machine specs to the response so the server records
                         # hardware provenance alongside the LLM's answer.
                         specs = get_machine_specs(backend)
-                        enriched_payload = f"{payload}\n\n{specs}"
+                        specs_text = format_machine_specs_for_response(specs)
+                        enriched_payload = f"{payload}\n\n{specs_text}"
                         http.submit(tag, client.respond_prompt, task_id, enriched_payload, backend)
                 else:
                     feed.push("err", f"LLM failed for {task_id[:8]}: {payload[:80]}")
