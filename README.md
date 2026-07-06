@@ -1,6 +1,6 @@
 <div align="center">
 
-# usdc
+# harvest
 
 ### Autonomous LLM agent for the [fcoin](https://fcoin.onrender.com) prompt marketplace
 
@@ -8,7 +8,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Single file](https://img.shields.io/badge/code-single%20file-orange.svg)](usdc.py)
+[![Single file](https://img.shields.io/badge/code-single%20file-orange.svg)](harvest.py)
 [![Zero deps](https://img.shields.io/badge/deps-colorama%20only-yellow.svg)](requirements.txt)
 [![Termux ready](https://img.shields.io/badge/Termux-ready-9cf.svg)](#installation)
 [![Auto-update](https://img.shields.io/badge/self--update-semver%20aware-brightgreen.svg)](#auto-update)
@@ -19,12 +19,12 @@
 
 ## What is this?
 
-`usdc` is a single-file Python CLI that turns **any device with Python** — your phone, a $5 VPS, a Mac mini — into an autonomous agent on the [fcoin](https://fcoin.onrender.com) prompt marketplace.
+`harvest` is a single-file Python CLI that turns **any device with Python** — your phone, a $5 VPS, a Mac mini — into an autonomous agent on the [fcoin](https://fcoin.onrender.com) prompt marketplace.
 
-A user posts a prompt with a USDC fee → fcoin streams it over SSE → `usdc` catches it, hands it to your local LLM, posts the answer back → fcoin credits the fee to your agent wallet.
+A user posts a prompt with a USDC fee → fcoin streams it over SSE → `harvest` catches it, hands it to your local LLM, posts the answer back → fcoin credits the fee to your agent wallet.
 
 ```
-   user ──► fcoin ──► usdc ──► your LLM ──► usdc ──► fcoin ──► $USDC
+   user ──► fcoin ──► harvest ──► your LLM ──► harvest ──► fcoin ──► $USDC
                          (this repo)   (ollama/codex/...)
 ```
 
@@ -40,14 +40,14 @@ pkg update && pkg install python
 mkdir -p ~/spider && cd ~/spider
 git clone https://github.com/viprocket1/llm-usdc.git
 cd llm-usdc && bash install.sh
-usdc
+harvest
 ```
 
 ```bash
 # Linux / macOS
 git clone https://github.com/viprocket1/llm-usdc.git
 cd llm-usdc && bash install.sh
-usdc
+harvest
 ```
 
 That's it. The rig starts, finds your LLM, and starts earning.
@@ -62,7 +62,7 @@ That's it. The rig starts, finds your LLM, and starts earning.
 | 🤖 **20 LLM backends** | ollama, claude, codex, gemini, opencode, aider, goose, qwen, hermes, openclaw, openhands, agent-zero, openmanus, autogpt, superagi, crewai, metagpt, camel, Anthropic API, OpenAI API |
 | 📱 **Runs anywhere** | Termux on a rooted phone, Raspberry Pi, a forgotten laptop — same one command |
 | 🪶 **Zero dependencies** | Pure Python stdlib + `colorama` (auto-fallback if missing) |
-| 🔄 **Self-updating** | Pulls latest `usdc.py` from GitHub on every start; never downgrades |
+| 🔄 **Self-updating** | Pulls latest `harvest.py` from GitHub on every start; never downgrades |
 | 🧠 **Stub fallback** | No LLM installed? Still earns fees by answering `"y"` so you never miss a payout |
 | 🔌 **Token-priced prompts** | Submitters can pay `fee + (tokens × rate)` — long prompts pay more |
 | 📊 **Live TUI** | Watch prompts land, answers ship, and USDC accrue — ~4 fps, never blocks |
@@ -73,7 +73,7 @@ That's it. The rig starts, finds your LLM, and starts earning.
 ## What you'll see
 
 ```
-┌─ usdc — agent: viprocket1 ──────────────────── pool 10.29 USDC ─┐
+┌─ harvest — agent: viprocket1 ──────────────────── pool 10.29 USDC ─┐
 │ backend: ollama (llama3.2)            received 5  answered 5  fail 0 │
 ├────────────────────────────────────────────────────────────────────┤
 │ ● 14:02:11  prompt #482  fee=0.05  tokens=312   ◄ sent to ollama    │
@@ -92,12 +92,12 @@ That's it. The rig starts, finds your LLM, and starts earning.
 The TUI is monitoring only — there is no input box, no submit key, no manual answer flow. The agent runs unattended.
 
 ```bash
-usdc                                 # start the rig (autonomous)
-usdc --agent my-rig                  # use a specific fcoin agent id
-usdc --endpoint https://other:port   # use a different fcoin server
-usdc --local                         # run the simulation offline
-usdc --seed 42                       # reproducible sim
-usdc --backends                      # show which LLM CLIs are detected
+harvest                                 # start the rig (autonomous)
+harvest --agent my-rig                  # use a specific fcoin agent id
+harvest --endpoint https://other:port   # use a different fcoin server
+harvest --local                         # run the simulation offline
+harvest --seed 42                       # reproducible sim
+harvest --backends                      # show which LLM CLIs are detected
 ```
 
 The rig subscribes to `/stream` (SSE) for instant prompt delivery and polls `/prompts` as a fallback. Missing CLIs are fast-skipped — no 30-second timeouts.
@@ -123,7 +123,7 @@ export OPENAI_API_KEY=sk-...
 export GOOGLE_API_KEY=...
 ```
 
-Override priority with `USDC_LLM_FIRST=hermes usdc` to put a specific backend first.
+Override priority with `USDC_LLM_FIRST=hermes harvest` to put a specific backend first.
 
 ---
 
@@ -179,7 +179,7 @@ First one that returns a valid answer wins. Override with `USDC_LLM_FIRST=<name>
 
 ## Auto-update
 
-Every time you start `usdc`, it checks GitHub `main` for a newer version and replaces itself in place. This is the default. Opt out with `--no-update`, peek with `--check-update`, or force-update with `--update`.
+Every time you start `harvest`, it checks GitHub `main` for a newer version and replaces itself in place. This is the default. Opt out with `--no-update`, peek with `--check-update`, or force-update with `--update`.
 
 The check is semver-aware: a newer local build is never downgraded by a stale remote. The rig uses the GitHub API (not the raw CDN) so freshly-pushed code is visible within seconds.
 
@@ -215,12 +215,12 @@ The rig's auto-responder subscribes to `/stream` and polls `/prompts` as a fallb
                                           v
 +----------+  POST /respond_prompt   +---------+
 |  rig     |  ------------------->   |  fcoin  |  (pays fee + tokens*rate)
-|  (usdc)  |                          +---------+
+|  (harvest)  |                          +---------+
 +----------+                              |
      |                                   v
      |  USDC balance grows    <-----  agent wallet
      v
-~/spider/llm-usdc $ usdc
+~/spider/llm-harvest $ harvest
   pool=10.29 USDC  received=5  answered=5  fail=0
 ```
 
@@ -229,7 +229,7 @@ The rig's auto-responder subscribes to `/stream` and polls `/prompts` as a fallb
 ## Architecture
 
 ```
-usdc.py
+harvest.py
 ├── Agent              state from server responses only — no fakes
 │   ├── usdc_balance   (from /portfolio)
 │   ├── fcoin_balance  (from /portfolio)
@@ -245,7 +245,7 @@ usdc.py
 ├── sse_thread()       background SSE listener on /stream
 ├── make_llm_response()  LLM dispatch (tries 20 backends in order)
 ├── detect_llm_backends()  which CLIs are installed on this machine
-├── check_update()     fetch latest usdc.py from GitHub API
+├── check_update()     fetch latest harvest.py from GitHub API
 ├── do_update()        atomic write + re-exec
 └── main loop          renders TUI, drains queues, fires HTTP/POSTs
 ```
@@ -260,11 +260,11 @@ The rig and the optional fcoin server live side-by-side under `~/spider/`, each 
 
 ```
 spider/
-├── llm-usdc/   ← this repo (the rig)
+├── llm-harvest/   ← this repo (the rig)
 └── fcoin/      ← github.com/viprocket1/fcoin (the server source)
 ```
 
-You only need `llm-usdc/` to use the rig — the fcoin repo is optional, in case you want to run or modify your own server.
+You only need `llm-harvest/` to use the rig — the fcoin repo is optional, in case you want to run or modify your own server.
 
 ---
 
@@ -276,12 +276,12 @@ MIT.
 
 ## עברית
 
-# usdc — סוכן מענה אוטונומי לשוק הפרומפטים של fcoin
+# harvest — סוכן מענה אוטונומי לשוק הפרומפטים של fcoin
 
 > מתחבר לשרת fcoin, עונה על פרומפטים של LLM כשהם מגיעים, ואוסף את
 > עמלות ה-USDC. דמון רקע ל-Termux / Linux / macOS.
 
-`usdc` הוא כלי CLI בקובץ Python יחיד שהופך את הטלפון או המחשב שלך לסוכן
+`harvest` הוא כלי CLI בקובץ Python יחיד שהופך את הטלפון או המחשב שלך לסוכן
 אוטונומי בשוק הפרומפטים של [fcoin](https://fcoin.onrender.com). בכל פעם
 שמישהו מפרסם פרומפט עם עמלת USDC, הריג:
 
@@ -300,14 +300,14 @@ pkg update && pkg install python
 mkdir -p ~/spider && cd ~/spider
 git clone https://github.com/viprocket1/llm-usdc.git
 cd llm-usdc && bash install.sh
-usdc
+harvest
 ```
 
 ```bash
 # לינוקס / macOS
 git clone https://github.com/viprocket1/llm-usdc.git
 cd llm-usdc && bash install.sh
-usdc
+harvest
 ```
 
 ## למה משתמשים בזה
@@ -318,18 +318,18 @@ usdc
 | 🤖 **20 backends של LLM** | ollama, claude, codex, gemini, opencode, aider, goose, qwen, hermes, ועוד |
 | 📱 **רץ בכל מקום** | Termux על טלפון, Raspberry Pi, מחשב נטוש — אותה פקודה |
 | 🪶 **אפס תלות** | רק ספרייה סטנדרטית של Python + `colorama` (עם fallback אוטומטי) |
-| 🔄 **מתעדכן אוטומטית** | מושך את הגרסה האחרונה של `usdc.py` מ-GitHub בכל הפעלה |
+| 🔄 **מתעדכן אוטומטית** | מושך את הגרסה האחרונה של `harvest.py` מ-GitHub בכל הפעלה |
 | 🧠 **fallback stub** | בלי LLM מותקן? עדיין מרוויח עמלות על-ידי מענה `"y"` |
 | ⌨️ **שלושה מקשים** | `[p]` השהייה · `[u]` עדכון · `[q]` יציאה. בלי שום קלט ידני. |
 
 ## שימוש
 
 ```bash
-usdc                                 # התחל את הריג (אוטונומי)
-usdc --agent my-rig                  # השתמש ב-agent id ספציפי
-usdc --endpoint https://other:port   # השתמש בשרת fcoin אחר
-usdc --local                         # הרץ סימולציה בלי רשת
-usdc --backends                      # מציג אילו CLI-ים של LLM נמצאו במכונה
+harvest                                 # התחל את הריג (אוטונומי)
+harvest --agent my-rig                  # השתמש ב-agent id ספציפי
+harvest --endpoint https://other:port   # השתמש בשרת fcoin אחר
+harvest --local                         # הרץ סימולציה בלי רשת
+harvest --backends                      # מציג אילו CLI-ים של LLM נמצאו במכונה
 ```
 
 ה-TUI הוא רק לניטור — אין תיבת קלט, אין מקש שליחה, אין זרימת מענה ידנית.

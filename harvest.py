@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-usdc — fcoin prompt-responder agent.
+harvest — rune prompt-responder agent.
 
-Connects to a fcoin-compatible server (default: https://fcoin.onrender.com),
+Connects to a rune-compatible server (default: https://fcoin.onrender.com),
 receives prompt requests via SSE + polling, runs each one through your
 local LLM, and POSTs the answer back. No manual input.
 
@@ -32,7 +32,7 @@ Answering pipeline (first backend that returns a valid reply wins):
  19. Anthropic API     (if ANTHROPIC_API_KEY is set)
  20. OpenAI API        (if OPENAI_API_KEY is set)
 
-Override priority order:  USDC_LLM_FIRST=<name>
+Override priority order:  HARVEST_LLM_FIRST=<name>
 Keys:  [p] pause  [u] self-update  [q] quit
 """
 
@@ -81,12 +81,12 @@ NETWORK_POLL_PROMPTS = 6.0
 SSE_RECONNECT_BACKOFF = 3.0
 LLM_TIMEOUT = 30
 
-__version__ = "1.9.0"
+__version__ = "2.0.0"
 # We use the GitHub API instead of raw.githubusercontent.com because the raw
 # CDN caches stale content for minutes after a push. The API always returns
 # the fresh file. See https://docs.github.com/en/rest/repos/contents
-GITHUB_API_URL = "https://api.github.com/repos/viprocket1/llm-usdc/contents/usdc.py"
-GITHUB_RAW_URL = "https://raw.githubusercontent.com/viprocket1/llm-usdc/main/usdc.py"  # fallback
+GITHUB_API_URL = "https://api.github.com/repos/viprocket1/llm-harvest/contents/harvest.py"
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/viprocket1/llm-harvest/main/harvest.py"  # fallback
 
 
 # ---------- ANSI helpers ----------------------------------------------------
@@ -116,7 +116,7 @@ class Agent:
 
     agent_id:     str = "termux-rig-01"
     started_at:   float = field(default_factory=time.time)
-    usdc_balance: float = 0.0       # from /portfolio
+    harvest_balance: float = 0.0       # from /portfolio
     fcoin_balance: float = 0.0     # from /portfolio
     open_prompts: int = 0          # from /prompts?status=open
     received:     int = 0          # count of prompts received
@@ -145,7 +145,7 @@ class Task:
     id: str
     prompt: str
     submitter: str
-    fee_usdc: float
+    fee_harvest: float
     received_at: float
 
 class Inbox:
@@ -289,7 +289,7 @@ def _llm_subprocess(cmd, text: str, stdin: bool = False):
 
 
 # (name, callable). The order here is the priority order. To prefer a
-# different backend, set USDC_LLM_FIRST=<name> in the environment.
+# different backend, set HARVEST_LLM_FIRST=<name> in the environment.
 LLM_BACKENDS = [
     ("ollama",       _llm_ollama),
     ("claude",       lambda t: _llm_subprocess(["claude", "-p"], t)),
@@ -381,13 +381,13 @@ def make_llm_response(prompt: str) -> tuple[str, str]:
     name as X-LLM-Backend provenance. Returns ("y", "") for the fallback —
     but the rig's dispatch loop REFUSES to post the fallback when the
     prompt has a min_response_words requirement (or default >= 3), so the
-    server won't accept it. To override that, set USDC_LLM_FIRST to a
+    server won't accept it. To override that, set HARVEST_LLM_FIRST to a
     real backend, or use USDC_ALLOW_STUB=1 to override the refusal.
     """
     text = (prompt or "").strip()
 
-    # Allow reordering: USDC_LLM_FIRST=<name> promotes that backend to the front.
-    preferred = os.environ.get("USDC_LLM_FIRST", "").strip()
+    # Allow reordering: HARVEST_LLM_FIRST=<name> promotes that backend to the front.
+    preferred = os.environ.get("HARVEST_LLM_FIRST", "").strip()
     backends = LLM_BACKENDS_WITH_API
     if preferred:
         backends = sorted(backends, key=lambda b: (0 if b[0] == preferred else 1))
@@ -563,7 +563,7 @@ def sse_thread(base: str, agent_id: str, inbox: Inbox, on_event, on_log):
                                     id=str(d.get("id", "")),
                                     prompt=str(d.get("prompt", "")),
                                     submitter=str(d.get("submitter", "?")),
-                                    fee_usdc=float(d.get("fee_usdc", 0) or 0),
+                                    fee_harvest=float(d.get("fee_harvest", 0) or 0),
                                     received_at=time.time(),
                                 )
                                 if task.id:
@@ -636,7 +636,7 @@ class LLMWorker:
 def hr(ch: str = "─", width: int = 60) -> str:
     return ch * width
 
-def fmt_usdc(x: float) -> str:
+def fmt_harvest(x: float) -> str:
     return f"{x:>10.6f}"
 
 def clip(s: str, n: int) -> str:
@@ -685,7 +685,7 @@ def render(agent: Agent, feed: Feed, inbox: Inbox, endpoint: str, online: bool,
                               f"answered={c(Fore.GREEN, str(agent.answered))}  "
                               f"failed={c(Fore.RED if agent.failed else Fore.WHITE, str(agent.failed))}"))
     out.append(move_to(6, 1) + c(Fore.CYAN, " WALLET       ") +
-               c(Fore.WHITE, f"USDC={c(Fore.GREEN, fmt_usdc(agent.usdc_balance))}   "
+               c(Fore.WHITE, f"USDC={c(Fore.GREEN, fmt_harvest(agent.harvest_balance))}   "
                               f"fcoin={c(Fore.YELLOW, f'{agent.fcoin_balance:>10.4f}')}"))
 
     out.append(move_to(7, 1) + c(Fore.YELLOW, hr("─", w)))
@@ -694,7 +694,7 @@ def render(agent: Agent, feed: Feed, inbox: Inbox, endpoint: str, online: bool,
     latest = inbox.latest()
     if latest:
         out.append(move_to(8, 1) + c(Fore.MAGENTA + Style.BRIGHT, " LATEST TASK  ") +
-                   c(Fore.WHITE, f"id={latest.id[:8]}  fee={latest.fee_usdc:.4f} USDC  by {latest.submitter}"))
+                   c(Fore.WHITE, f"id={latest.id[:8]}  fee={latest.fee_harvest:.4f} USDC  by {latest.submitter}"))
         out.append(move_to(9, 1) + c(Fore.WHITE, " > ") +
                    c(Fore.WHITE, clip(latest.prompt.replace("\n", " "), w - 4)))
     else:
@@ -750,7 +750,7 @@ def render(agent: Agent, feed: Feed, inbox: Inbox, endpoint: str, online: bool,
                c(state_color + Style.BRIGHT, f"[{state}]") +
                c(Fore.WHITE, f"  endpoint: {endpoint}    online: {'yes' if online else 'no'}    inbox: {inbox.count()}"))
     out.append(move_to(base_row + 1, 1) +
-               c(Fore.WHITE, f" usdc {__version__}  keys: ") +
+               c(Fore.WHITE, f" harvest {__version__}  keys: ") +
                c(Fore.CYAN, "[p]") + c(Fore.WHITE, " pause  ") +
                c(Fore.CYAN, "[u]") + c(Fore.WHITE, " update  ") +
                c(Fore.CYAN, "[q]") + c(Fore.WHITE, " quit"))
@@ -866,7 +866,7 @@ def run(args: argparse.Namespace) -> int:
         ev_type = ev.get("type", "?")
         d = ev.get("data", {})
         if isinstance(d, dict) and d.get("type") == "prompt_request":
-            log("task", f"new task {str(d.get('id',''))[:8]} fee={d.get('fee_usdc', 0):.3f}USDC")
+            log("task", f"new task {str(d.get('id',''))[:8]} fee={d.get('fee_harvest', 0):.3f}USDC")
         else:
             log("sse", f"event {ev_type}")
         sse_events.put(ev)
@@ -892,7 +892,7 @@ def run(args: argparse.Namespace) -> int:
         sys.stdout.write(SHOW_CURSOR + ALT_SCREEN_OFF)
         sys.stdout.flush()
         print()
-        print(f"finalized: usdc={agent.usdc_balance:.6f} USDC  fcoin={agent.fcoin_balance:.4f}  "
+        print(f"finalized: harvest={agent.harvest_balance:.6f} USDC  fcoin={agent.fcoin_balance:.4f}  "
               f"prompts rcv={agent.received} ans={agent.answered} fail={agent.failed}")
         sys.exit(0)
 
@@ -941,11 +941,11 @@ def run(args: argparse.Namespace) -> int:
                     else:
                         online = True
                         agent.last_poll_at = now
-                        usdc_obj = res.get("usdc", {}) or {}
+                        harvest_obj = res.get("harvest", {}) or {}
                         fcoin_obj = res.get("fcoin", {}) or {}
-                        agent.usdc_balance = float(usdc_obj.get("total", 0.0))
+                        agent.harvest_balance = float(harvest_obj.get("total", 0.0))
                         agent.fcoin_balance = float(fcoin_obj.get("total", 0.0))
-                        feed.push("rpc", f"portfolio synced — {agent.usdc_balance:.4f} USDC")
+                        feed.push("rpc", f"portfolio synced — {agent.harvest_balance:.4f} USDC")
                 elif tag == "prompts":
                     if "_err" in res:
                         pass
@@ -961,12 +961,12 @@ def run(args: argparse.Namespace) -> int:
                                 id=pid,
                                 prompt=str(it.get("prompt", "")),
                                 submitter=str(it.get("submitter", "?")),
-                                fee_usdc=float(it.get("fee_usdc", 0) or 0),
+                                fee_harvest=float(it.get("fee_harvest", 0) or 0),
                                 received_at=time.time(),
                             )
                             inbox.add(task)
                             agent.received += 1
-                            fee = it.get("fee_usdc", 0)
+                            fee = it.get("fee_harvest", 0)
                             sub = it.get("submitter", "?")
                             prompt_text = clip(str(it.get("prompt", "")).replace("\n", " "), 40)
                             feed.push("mkt", f"new prompt {pid[:8]}  fee={fee:.3f}USDC  by {sub}: {prompt_text}")
@@ -988,10 +988,10 @@ def run(args: argparse.Namespace) -> int:
                         agent.answered += 1
                         fee_earned = 0.0
                         if isinstance(res, dict):
-                            fee_earned = float(res.get("paid_out_usdc", 0) or 0)
+                            fee_earned = float(res.get("paid_out_harvest", 0) or 0)
                         if fee_earned <= 0:
                             fee_earned = 0.001
-                        agent.usdc_balance += fee_earned
+                        agent.harvest_balance += fee_earned
                         feed.push("ans", f"answered {task_id[:8]}  +{fee_earned:.4f} USDC")
             http_results.clear()
 
@@ -1026,7 +1026,7 @@ def run(args: argparse.Namespace) -> int:
                         if is_stub and not os.environ.get("USDC_ALLOW_STUB"):
                             feed.push("warn",
                                       f"skip stub for {task_id[:8]}: no LLM backend produced a real answer "
-                                      f"(set USDC_LLM_FIRST=<backend> or USDC_ALLOW_STUB=1 to override)")
+                                      f"(set HARVEST_LLM_FIRST=<backend> or USDC_ALLOW_STUB=1 to override)")
                             agent.failed += 1
                             pending_llm.pop(task_id, None)
                             continue
@@ -1081,7 +1081,7 @@ def run(args: argparse.Namespace) -> int:
 
 
 def _fetch_remote_source(timeout: float = 15) -> str | None:
-    """Fetch the latest usdc.py from GitHub. Tries the API first (always fresh),
+    """Fetch the latest harvest.py from GitHub. Tries the API first (always fresh),
     falls back to raw.githubusercontent.com (may be cached). Returns None on
     any failure. Never raises."""
     # 1) GitHub API — always fresh
@@ -1090,7 +1090,7 @@ def _fetch_remote_source(timeout: float = 15) -> str | None:
             GITHUB_API_URL,
             headers={
                 "Accept": "application/vnd.github.raw+json",
-                "User-Agent": "usdc-rig",
+                "User-Agent": "harvest-rig",
             },
         )
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -1134,7 +1134,7 @@ def _version_tuple(v: str) -> tuple:
 
 
 def check_update(timeout: float = 5.0) -> tuple[str, str] | None:
-    """Fetch the latest usdc.py from GitHub and return (current_ver, new_ver).
+    """Fetch the latest harvest.py from GitHub and return (current_ver, new_ver).
 
     Returns None on any failure (network, parse, etc.) — never raises.
     No file is modified. Safe to call on every startup.
@@ -1150,7 +1150,7 @@ def check_update(timeout: float = 5.0) -> tuple[str, str] | None:
 
 
 def do_update() -> tuple[bool, str]:
-    """Fetch latest usdc.py from GitHub, replace the running script, re-exec.
+    """Fetch latest harvest.py from GitHub, replace the running script, re-exec.
 
     Returns (success, message). On success, this function does NOT return —
     the process is replaced via os.execv. The return type is for the
@@ -1208,7 +1208,7 @@ def do_update() -> tuple[bool, str]:
 
 def main() -> int:
     p = argparse.ArgumentParser(
-        prog="usdc",
+        prog="harvest",
         description="Autonomous fcoin prompt-responder rig for Termux. No manual input.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -1216,8 +1216,8 @@ def main() -> int:
             "Runs unattended. Polls fcoin for new prompts, sends each one to your\n"
             "local LLM (ollama → codex → gemini → fallback), and POSTs the reply\n"
             "back to /respond_prompt. Earns USDC for every accepted answer.\n\n"
-            "auto-update:  runs on every `usdc` startup. Fetches the latest\n"
-            "              usdc.py from GitHub main, replaces the running\n"
+            "auto-update:  runs on every `harvest` startup. Fetches the latest\n"
+            "              harvest.py from GitHub main, replaces the running\n"
             "              script atomically, and restarts in place.\n"
             "              Use --no-update to skip, --check-update to peek.\n"
         ),
@@ -1258,7 +1258,7 @@ def main() -> int:
     args = p.parse_args()
 
     if args.version:
-        print(f"usdc {__version__}  (endpoint: {args.endpoint or DEFAULT_ENDPOINT})")
+        print(f"harvest {__version__}  (endpoint: {args.endpoint or DEFAULT_ENDPOINT})")
         return 0
 
     if args.backends:
@@ -1287,7 +1287,7 @@ def main() -> int:
                 print(f"# {d.get('count',0)} prompts (latest)")
                 for p in d.get("prompts", []):
                     print(f"  {p.get('id','')[:12]}  {p.get('status',''):10s}  "
-                          f"{p.get('fee_usdc',0):>6.3f} USDC  by {p.get('submitter','')}: "
+                          f"{p.get('fee_harvest',0):>6.3f} USDC  by {p.get('submitter','')}: "
                           f"{str(p.get('prompt',''))[:60]!r}")
             elif args.responses:
                 q = f"?agent={args.responses_of}&limit=20" if args.responses_of else "?limit=20"
@@ -1296,7 +1296,7 @@ def main() -> int:
                 print(f"# {d.get('count',0)} responses (latest)")
                 for r in d.get("responses", []):
                     print(f"  prompt={r.get('request_id','')[:12]}  by {r.get('agent_id','')}  "
-                          f"earned {r.get('fee_usdc',0):.3f} USDC")
+                          f"earned {r.get('fee_harvest',0):.3f} USDC")
                     print(f"    Q: {str(r.get('prompt',''))[:80]!r}")
                     print(f"    A: {str(r.get('response',''))[:80]!r}")
             elif args.earnings:
@@ -1306,15 +1306,15 @@ def main() -> int:
                 if "agent" in d:
                     print(f"agent {d['agent']}: submitted={d.get('submitted',0)}  "
                           f"answered={d.get('answered',0)}  "
-                          f"spent={d.get('spent_usdc',0):.4f} USDC  "
-                          f"earned={d.get('earned_usdc',0):.4f} USDC")
+                          f"spent={d.get('spent_harvest',0):.4f} USDC  "
+                          f"earned={d.get('earned_harvest',0):.4f} USDC")
                 else:
                     print(f"# {d.get('count',0)} agents; totals: {d.get('totals',{})}")
                     for ag, row in sorted(d.get("agents",{}).items(),
-                                          key=lambda kv: -kv[1].get("earned_usdc",0)):
+                                          key=lambda kv: -kv[1].get("earned_harvest",0)):
                         print(f"  {ag:25s}  submitted={row.get('submitted',0):3d}  "
                               f"answered={row.get('answered',0):3d}  "
-                              f"earned={row.get('earned_usdc',0):>10.4f} USDC")
+                              f"earned={row.get('earned_harvest',0):>10.4f} USDC")
             elif args.stats:
                 with urllib.request.urlopen(f"{endpoint}/stats", timeout=8) as r:
                     d = _json.loads(r.read())
@@ -1326,7 +1326,7 @@ def main() -> int:
                 print(f"  responses:  {r.get('total',0)}")
                 print(f"  top earners:")
                 for e in d.get("top_earners", [])[:10]:
-                    print(f"    {e.get('agent',''):25s}  earned={e.get('earned_usdc',0):>10.4f} USDC")
+                    print(f"    {e.get('agent',''):25s}  earned={e.get('earned_harvest',0):>10.4f} USDC")
         except Exception as e:
             print(f"error: {e}")
             return 1
@@ -1344,13 +1344,13 @@ def main() -> int:
     if args.check_update:
         result = check_update()
         if result is None:
-            print(f"usdc {__version__}  (could not reach update server)")
+            print(f"harvest {__version__}  (could not reach update server)")
             return 1
         cur, new = result
         if cur == new:
-            print(f"usdc {cur}  (latest)")
+            print(f"harvest {cur}  (latest)")
             return 0
-        print(f"usdc {cur}  ->  {new} available  (run `usdc --update` to install)")
+        print(f"harvest {cur}  ->  {new} available  (run `harvest --update` to install)")
         return 0
 
     # Auto-update on startup unless --no-update is set
@@ -1360,7 +1360,7 @@ def main() -> int:
             cur, new = result
             if _version_tuple(new) > _version_tuple(cur):
                 # print to stderr so it shows before the TUI takes over
-                print(f"usdc {cur} -> {new}  (auto-updating...)", file=sys.stderr)
+                print(f"harvest {cur} -> {new}  (auto-updating...)", file=sys.stderr)
                 ok, msg = do_update()
                 if not ok:
                     print(f"auto-update failed: {msg}  (continuing with {cur})", file=sys.stderr)
